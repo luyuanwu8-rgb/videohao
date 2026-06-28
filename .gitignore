@@ -1,0 +1,21 @@
+node_modules/
+.next/
+out/
+build/
+
+# 环境与密钥
+.env
+.env.local
+.env.*.bak
+*.bak
+
+# 数据与产物（每个任务的中间产物全部落盘在这里）
+data/app.db
+data/app.db-*
+data/tasks/
+data/_*
+# 注意：data/subtitle-filters.json 是用户词库配置，需纳入版本库（勿忽略）
+
+# 杂项
+*.log
+.DS_Store

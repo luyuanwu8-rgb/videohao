@@ -1,0 +1,142 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import { T, btn } from "../../../ui/theme";
+import { advance, saveEdit, saveConfig, useArtifact, PanelShell, StepLoader, type PanelProps } from "./shared";
+import { IMAGE_STYLES, DEFAULT_STYLE, imageStyle } from "@/lib/styles";
+
+type Item = { sceneId: number; imagePath: string; prompt: string; visual: string };
+type Images = { items: Item[] };
+type ImageConfig = { style: string; ratio: string };
+
+/** ⑦场景图 — 选画面风格 + 展示生图结果，可整体重绘，确认后进风格运镜 */
+export function ImagePanel({ taskId, detail, reload, navigate }: PanelProps) {
+  const read = useArtifact();
+  const [d, setD] = useState<Images | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [zoom, setZoom] = useState<Item | null>(null);
+  const [imgCfg, setImgCfg] = useState<ImageConfig>({ style: DEFAULT_STYLE, ratio: "9:16" });
+
+  const status = detail.steps.find((s) => s.name === "imageGenerate")?.status;
+  const done = status === "completed";
+  const step = detail.steps.find((s) => s.name === "imageGenerate");
+
+  useEffect(() => {
+    read<ImageConfig>(taskId, "image-config.json").then((x) => x && setImgCfg((c) => ({ ...c, ...x })));
+  }, [taskId, read]);
+
+  // imgCfg 变化立即软保存（不重置步骤），刷新不丢
+  const isFirstMount = useRef(true);
+  useEffect(() => {
+    if (isFirstMount.current) { isFirstMount.current = false; return; }
+    saveConfig(taskId, "image-config.json", imgCfg);
+  }, [taskId, imgCfg]);
+
+  useEffect(() => {
+    if (!done) return;
+    read<Images>(taskId, "images.json").then((x) => x && setD(x));
+  }, [done, taskId, read]);
+
+  // 换风格重绘：先 saveEdit 写 image-config（重置 imageGenerate），再 run
+  async function regen() {
+    setBusy(true);
+    await saveEdit(taskId, "image", imgCfg);
+    await fetch(`/api/tasks/${taskId}/advance`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ checkpoint: "image" }),
+    });
+    reload();
+    setBusy(false);
+  }
+
+  async function next() {
+    setBusy(true);
+    await advance(taskId, "style");
+    reload();
+    navigate("style");
+    setBusy(false);
+  }
+
+  const currentStyle = imageStyle(imgCfg.style);
+
+  return (
+    <PanelShell
+      title="⑦ 场景图"
+      hint="选择画面风格后生成或重绘。每镜一张配图，确认后进风格运镜。"
+      footer={
+        <>
+          <button onClick={regen} disabled={busy} style={btn("ghost")}>
+            {busy ? "处理中…" : done ? "换风格重新生成" : "生成场景图"}
+          </button>
+          <button onClick={next} disabled={busy || !done} style={btn("primary")}>
+            确认配图 →
+          </button>
+        </>
+      }
+    >
+      {/* 画面风格选择器 */}
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ color: T.textSoft, fontSize: 13, marginBottom: 8 }}>
+          画面风格（当前：{currentStyle.label}）
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {IMAGE_STYLES.map((s) => {
+            const on = imgCfg.style === s.key;
+            return (
+              <button
+                key={s.key}
+                onClick={() => setImgCfg({ ...imgCfg, style: s.key })}
+                style={{
+                  padding: "8px 14px", borderRadius: 8, cursor: "pointer",
+                  border: `2px solid ${on ? T.accent : T.border}`,
+                  background: on ? T.accentSoft : T.panel,
+                  textAlign: "left", minWidth: 110,
+                }}
+              >
+                <div style={{ fontWeight: 600, color: T.text, fontSize: 13 }}>{s.label}</div>
+                <div style={{ fontSize: 11, color: T.textSoft, marginTop: 2 }}>{s.desc}</div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* 生图结果 */}
+      {status === "running" || (!done && status !== "failed") ? (
+        <StepLoader step={step} label="生成场景图" />
+      ) : !d ? (
+        <p style={{ color: T.textSoft }}>选好风格后点「生成场景图」。</p>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: 12 }}>
+          {d.items.map((it) => (
+            <div
+              key={it.sceneId}
+              onClick={() => setZoom(it)}
+              style={{ cursor: "zoom-in", border: `1px solid ${T.border}`, borderRadius: 10, overflow: "hidden", background: T.panelAlt }}
+              title={it.prompt}
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={`/api/tasks/${taskId}/file/${it.imagePath}`}
+                alt={`场景 ${it.sceneId}`}
+                style={{ width: "100%", aspectRatio: "9/16", objectFit: "cover", display: "block" }}
+              />
+              <div style={{ padding: "4px 8px", fontSize: 11, color: T.textFaint }}>镜头 {it.sceneId}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {zoom && (
+        <div
+          onClick={() => setZoom(null)}
+          style={{ position: "fixed", inset: 0, background: "rgba(40,32,22,0.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, cursor: "zoom-out" }}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={`/api/tasks/${taskId}/file/${zoom.imagePath}`} alt="" style={{ maxHeight: "86vh", borderRadius: 12 }} />
+        </div>
+      )}
+    </PanelShell>
+  );
+}
