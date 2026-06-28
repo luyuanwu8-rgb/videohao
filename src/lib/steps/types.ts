@@ -14,6 +14,7 @@ export type StepName =
   | "rewrite"
   | "storyboard"
   | "assetSearch"
+  | "director"
   | "imageGenerate"
   | "tts"
   | "subtitleAlign"
@@ -80,7 +81,8 @@ export const PIPELINE_DEPS: Record<StepName, StepName[]> = {
   storyboard: ["rewrite"],
   // 视觉线
   assetSearch: ["storyboard"],
-  imageGenerate: ["assetSearch"],
+  director: ["assetSearch"], // 导演：读全文+分镜，逐镜规划镜头语言/选角
+  imageGenerate: ["director"],
   // 音频线（与视觉线并行）
   tts: ["storyboard"],
   subtitleAlign: ["tts"],
@@ -96,6 +98,7 @@ export const PIPELINE_ORDER: StepName[] = [
   "rewrite",
   "storyboard",
   "assetSearch",
+  "director",
   "imageGenerate",
   "tts",
   "subtitleAlign",

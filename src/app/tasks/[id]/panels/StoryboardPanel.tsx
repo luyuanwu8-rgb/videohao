@@ -30,10 +30,9 @@ export function StoryboardPanel({ taskId, detail, reload, navigate }: PanelProps
     if (!d) return;
     setBusy(true);
     await saveEdit(taskId, "storyboard", d);
-    await advance(taskId, "tts");
-    await advance(taskId, "image");
+    await advance(taskId, "director");
     reload();
-    navigate("tts");
+    navigate("director");
     setBusy(false);
   }
 
@@ -49,7 +48,7 @@ export function StoryboardPanel({ taskId, detail, reload, navigate }: PanelProps
       hint="每个镜头一句口播 + 一句画面描述。可逐条修改，确认后生成配音与场景图。"
       footer={
         <button onClick={next} disabled={busy || !d} style={btn("primary")}>
-          {busy ? "处理中…" : "确认，生成配音 + 场景图 →"}
+          {busy ? "处理中…" : "确认分镜，AI 导演规划 →"}
         </button>
       }
     >

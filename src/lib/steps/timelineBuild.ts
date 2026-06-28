@@ -77,28 +77,19 @@ export const timelineBuild: StepDef = {
     const W = 1080;
     const H = 1920;
     const FPS = 24; // 图书带货(图+字幕+缓慢运镜)24fps 肉眼无差，比 30 少 20% 帧，明显提速
-    const imgBySc = new Map(images.items.map((i) => [i.sceneId, i]));
     const durBySc = new Map(voice.segments.map((s) => [s.sceneId, s.duration]));
 
     // 为单个动效构建一份 timeline
     const buildOne = (motionKey: string): Timeline => {
       const preset = motionPreset(motionKey);
       const tracks: Timeline["tracks"] = [];
-      let cursor = 0;
 
+      // 1) 音频线：逐句配音（句级，连续铺满），同时记录每个 scene 的起始时刻
+      const sceneStart = new Map<number, number>();
+      let cursor = 0;
       for (const scene of board.scenes) {
         const dur = durBySc.get(scene.id) ?? scene.estDuration;
-        const img = imgBySc.get(scene.id);
-        if (img) {
-          tracks.push({
-            type: "image",
-            src: img.imagePath,
-            start: cursor,
-            duration: dur,
-            zoom: preset.zoom,
-            sceneId: scene.id,
-          });
-        }
+        sceneStart.set(scene.id, cursor);
         const seg = voice.segments.find((s) => s.sceneId === scene.id);
         if (seg) {
           tracks.push({
@@ -112,6 +103,23 @@ export const timelineBuild: StepDef = {
         }
         cursor += dur;
       }
+      const totalDur = cursor;
+
+      // 2) 画面线：每张图(节拍)按它覆盖的句子总时长显示，起点 = 首句起点
+      for (const img of images.items) {
+        const ids = img.sceneIds?.length ? img.sceneIds : [];
+        if (!ids.length) continue;
+        const start = sceneStart.get(ids[0]) ?? 0;
+        const imgDur = ids.reduce((sum, id) => sum + (durBySc.get(id) ?? 0), 0) || 0.1;
+        tracks.push({
+          type: "image",
+          src: img.imagePath,
+          start,
+          duration: imgDur,
+          zoom: preset.zoom,
+          sceneId: ids[0],
+        });
+      }
 
       tracks.push({
         type: "subtitle",
@@ -124,7 +132,7 @@ export const timelineBuild: StepDef = {
           type: "text",
           text: disclaimer,
           start: 0,
-          duration: Math.max(0.1, cursor),
+          duration: Math.max(0.1, totalDur),
           role: "disclaimer",
         });
       }
@@ -134,7 +142,7 @@ export const timelineBuild: StepDef = {
         width: W,
         height: H,
         fps: FPS,
-        duration: cursor,
+        duration: totalDur,
         tracks,
         motion: motionKey,
       });

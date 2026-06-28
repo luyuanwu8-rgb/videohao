@@ -47,7 +47,14 @@ export const CHECKPOINTS: Checkpoint[] = [
     label: "分镜",
     steps: ["storyboard"],
     editable: "storyboard.json",
-    invalidatesFrom: "assetSearch",
+    invalidatesFrom: "director",
+  },
+  {
+    key: "director",
+    label: "导演分镜",
+    steps: ["assetSearch", "director"],
+    editable: "director.json",
+    invalidatesFrom: "imageGenerate",
   },
   {
     key: "tts",
@@ -59,7 +66,7 @@ export const CHECKPOINTS: Checkpoint[] = [
   {
     key: "image",
     label: "场景图",
-    steps: ["assetSearch", "imageGenerate"],
+    steps: ["imageGenerate"],
     editable: "image-config.json",
     invalidatesFrom: "imageGenerate",
   },

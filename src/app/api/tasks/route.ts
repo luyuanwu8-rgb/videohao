@@ -14,18 +14,30 @@ export async function GET() {
   return NextResponse.json({ ok: true, tasks: rows, queue: queueSnapshot() });
 }
 
-/** POST /api/tasks — 粘贴抖音链接新建任务，后台跑到第一个检查点(解析) */
+/** POST /api/tasks — 新建任务。
+ *  - 传 sourceUrl：抖音链接模式，跑到解析检查点。
+ *  - 传 script：自带文案模式，跳过解析/ASR/改写，直接到分镜检查点。 */
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
   const sourceUrl = String(body.sourceUrl ?? "").trim();
-  if (!sourceUrl) {
-    return NextResponse.json({ ok: false, error: "sourceUrl is required" }, { status: 400 });
-  }
+  const script = String(body.script ?? "").trim();
   const track = body.track ? String(body.track) : undefined;
-  const task = await createTask({ sourceUrl, track });
 
+  if (script) {
+    // 自带文案：前4步已在 createTask 标记完成，直接推进到分镜
+    const task = await createTask({ script, track });
+    void advanceTo(task.id, "storyboard").catch(() => {});
+    return NextResponse.json({ ok: true, taskId: task.id });
+  }
+
+  if (!sourceUrl) {
+    return NextResponse.json(
+      { ok: false, error: "需要 sourceUrl(抖音链接) 或 script(自带文案)" },
+      { status: 400 }
+    );
+  }
+  const task = await createTask({ sourceUrl, track });
   // 分步模式:只跑到第一个检查点(解析),停下等用户审阅
   void advanceTo(task.id, "parse").catch(() => {});
-
   return NextResponse.json({ ok: true, taskId: task.id });
 }

@@ -25,27 +25,55 @@ function now(): number {
   return Math.floor(Date.now() / 1000);
 }
 
-/** 创建任务 + 初始化所有 step 行为 pending */
+/** 创建任务 + 初始化所有 step 行为 pending。
+ * 传入 script 时走"自带文案"模式：把文案写成 rewrite.json，
+ * 跳过 extract/transcribe/viralAnalyze/rewrite（标记 completed），流水线从 storyboard 起跑。 */
 export async function createTask(input: {
   sourceUrl?: string;
   title?: string;
   track?: string;
+  script?: string; // 自带定稿口播稿(方案B)
 }): Promise<Task> {
   const id = randomUUID();
   const track = input.track ?? process.env.DEFAULT_TRACK ?? "health";
+  const byoScript = (input.script ?? "").trim(); // bring-your-own script
+  // 自带文案时，标题缺省取文案首句(≤20字)兜底
+  const title =
+    input.title ??
+    (byoScript ? byoScript.replace(/\s+/g, "").slice(0, 20) : undefined);
   const [task] = await db
     .insert(tasks)
-    .values({ id, sourceUrl: input.sourceUrl, title: input.title, track })
+    .values({ id, sourceUrl: input.sourceUrl, title, track })
     .returning();
+
+  // 自带文案模式：前4步视为已完成（跳过抖音解析+ASR+爆款分析+改写）
+  const SKIP = new Set<StepName>(["extract", "transcribe", "viralAnalyze", "rewrite"]);
   await db.insert(stepsTable).values(
     PIPELINE_ORDER.map((name) => ({
       id: randomUUID(),
       taskId: id,
       name,
-      status: "pending" as const,
+      status: (byoScript && SKIP.has(name) ? "completed" : "pending") as
+        | "completed"
+        | "pending",
+      startedAt: byoScript && SKIP.has(name) ? now() : null,
+      endedAt: byoScript && SKIP.has(name) ? now() : null,
     }))
   );
   await mkdir(taskDir(id), { recursive: true });
+
+  // 自带文案：直接落 rewrite.json（storyboard 读它的 script 字段切句）
+  if (byoScript) {
+    const rewrite = {
+      title: title ?? "",
+      sourceBook: "", // 书名留到「选书+标题」环节填
+      hooks: [],
+      script: byoScript,
+    };
+    const abs = join(taskDir(id), "rewrite.json");
+    await writeFile(abs, JSON.stringify(rewrite, null, 2), "utf-8");
+    await registerArtifact(id, "rewrite.json", { fileType: "json", tag: "byo" });
+  }
   return task;
 }
 

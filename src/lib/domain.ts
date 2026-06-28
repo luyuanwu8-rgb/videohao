@@ -71,12 +71,13 @@ export const voiceConfigSchema = z.object({
 });
 export type VoiceConfig = z.infer<typeof voiceConfigSchema>;
 
-// image: 每个 scene 一张图，带 prompt 和 tag（留素材库接缝）
+// image: 每个画面节拍(beat)一张图。一张图覆盖若干 sceneId(决定显示时长)。
 export const imageItemSchema = z.object({
-  sceneId: z.number().int(),
+  beatId: z.number().int().default(0), // 来自导演的画面节拍号
+  sceneIds: z.array(z.number().int()).default([]), // 本图覆盖的句子(决定显示多久)
   imagePath: z.string(),
   prompt: z.string(),
-  visual: z.string(), // 冗余存一份，将来 embed 做复用匹配
+  visual: z.string(), // 冗余存一份(导演 composition)，将来 embed 做复用匹配
   reused: z.boolean().default(false), // 是否来自素材库复用（v1 恒 false）
 });
 export const imagesSchema = z.object({
@@ -84,3 +85,30 @@ export const imagesSchema = z.object({
 });
 export type ImageItem = z.infer<typeof imageItemSchema>;
 export type Images = z.infer<typeof imagesSchema>;
+
+// director: 导演规划。把句级分镜归并成"画面节拍"，每拍一张图，含镜头语言+选角。
+// 角色卡：反复出现的叙事人物，保证同叙事线人物一致。
+export const castSchema = z.object({
+  id: z.string(), // 引用键，如 "A"
+  bible: z.string(), // 角色设定，如 "65岁中国老年女性,银发,慈祥圆脸,深色开衫"
+});
+// 画面节拍：覆盖哪几个 scene（→显示时长由这些 scene 配音时长合计）+ 一张图的完整导演设计
+export const beatSchema = z.object({
+  id: z.number().int(), // 节拍序号(从1)
+  sceneIds: z.array(z.number().int()), // 本拍覆盖的 scene id（连续，决定该图显示多久）
+  use: z.string().default("空镜"), // "cast:A" / "空镜" / "配角"
+  shotType: z.string().default(""), // 景别：面部特写/全景/中景…
+  mood: z.string().default(""), // 本拍情绪（服务情绪曲线）
+  composition: z.string(), // 构图+光线+场景（喂 image step 的核心）
+});
+export const directorSchema = z.object({
+  audience: z.string().default(""), // 目标受众（前端可改，导演据此选角）
+  theme: z.string().default(""), // 全片母题
+  emotionArc: z.string().default(""), // 情绪曲线
+  visualTone: z.string().default(""), // 全局视觉基调（写实度/色调/审美）
+  cast: z.array(castSchema).default([]), // 反复出现的角色卡
+  beats: z.array(beatSchema), // 画面节拍序列
+});
+export type Cast = z.infer<typeof castSchema>;
+export type Beat = z.infer<typeof beatSchema>;
+export type Director = z.infer<typeof directorSchema>;

@@ -5,7 +5,7 @@ import { T, btn } from "../../../ui/theme";
 import { advance, saveEdit, saveConfig, useArtifact, PanelShell, StepLoader, type PanelProps } from "./shared";
 import { IMAGE_STYLES, DEFAULT_STYLE, imageStyle } from "@/lib/styles";
 
-type Item = { sceneId: number; imagePath: string; prompt: string; visual: string };
+type Item = { beatId: number; sceneIds: number[]; imagePath: string; prompt: string; visual: string };
 type Images = { items: Item[] };
 type ImageConfig = { style: string; ratio: string };
 
@@ -58,6 +58,20 @@ export function ImagePanel({ taskId, detail, reload, navigate }: PanelProps) {
     setBusy(false);
   }
 
+  // 手动重排：交换两张图的图片文件(imagePath)，但各自覆盖的句子(sceneIds)留在原位置不变。
+  // 即"换图不换时段"——纠正九宫格模型偶发的放错格。写回 images.json(软保存,不重跑)。
+  function swapImage(i: number, j: number) {
+    if (!d || j < 0 || j >= d.items.length) return;
+    const items = d.items.map((it) => ({ ...it }));
+    const a = items[i], b = items[j];
+    const tmpPath = a.imagePath, tmpPrompt = a.prompt, tmpVisual = a.visual;
+    a.imagePath = b.imagePath; a.prompt = b.prompt; a.visual = b.visual;
+    b.imagePath = tmpPath; b.prompt = tmpPrompt; b.visual = tmpVisual;
+    const next = { ...d, items };
+    setD(next);
+    saveConfig(taskId, "images.json", next); // 软保存,不重置步骤
+  }
+
   const currentStyle = imageStyle(imgCfg.style);
 
   return (
@@ -103,26 +117,32 @@ export function ImagePanel({ taskId, detail, reload, navigate }: PanelProps) {
       </div>
 
       {/* 生图结果 */}
-      {status === "running" || (!done && status !== "failed") ? (
+      {status === "running" ? (
         <StepLoader step={step} label="生成场景图" />
       ) : !d ? (
         <p style={{ color: T.textSoft }}>选好风格后点「生成场景图」。</p>
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: 12 }}>
-          {d.items.map((it) => (
+          {d.items.map((it, idx) => (
             <div
-              key={it.sceneId}
-              onClick={() => setZoom(it)}
-              style={{ cursor: "zoom-in", border: `1px solid ${T.border}`, borderRadius: 10, overflow: "hidden", background: T.panelAlt }}
+              key={it.beatId}
+              style={{ border: `1px solid ${T.border}`, borderRadius: 10, overflow: "hidden", background: T.panelAlt }}
               title={it.prompt}
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={`/api/tasks/${taskId}/file/${it.imagePath}`}
-                alt={`场景 ${it.sceneId}`}
-                style={{ width: "100%", aspectRatio: "9/16", objectFit: "cover", display: "block" }}
+                alt={`节拍 ${it.beatId}`}
+                onClick={() => setZoom(it)}
+                style={{ width: "100%", aspectRatio: "9/16", objectFit: "cover", display: "block", cursor: "zoom-in" }}
               />
-              <div style={{ padding: "4px 8px", fontSize: 11, color: T.textFaint }}>镜头 {it.sceneId}</div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 6px" }}>
+                <button onClick={() => swapImage(idx, idx - 1)} disabled={idx === 0}
+                  title="与上一张换图" style={{ border: "none", background: "transparent", cursor: idx === 0 ? "default" : "pointer", color: idx === 0 ? T.textFaint : T.accent, fontSize: 14 }}>◀</button>
+                <span style={{ fontSize: 11, color: T.textFaint }}>第 {it.beatId} 拍 · 句 {it.sceneIds.join(",")}</span>
+                <button onClick={() => swapImage(idx, idx + 1)} disabled={idx === d.items.length - 1}
+                  title="与下一张换图" style={{ border: "none", background: "transparent", cursor: idx === d.items.length - 1 ? "default" : "pointer", color: idx === d.items.length - 1 ? T.textFaint : T.accent, fontSize: 14 }}>▶</button>
+              </div>
             </div>
           ))}
         </div>

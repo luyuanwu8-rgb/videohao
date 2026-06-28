@@ -28,14 +28,14 @@ export const IMAGE_STYLES: ImageStyle[] = [
     label: "油画印象",
     desc: "印象派笔触·温润古意(健康赛道默认)",
     positive: "oil painting, impressionist style, visible brushstrokes, palette knife texture, impasto, warm light, painterly, 印象派油画风格, 厚涂笔触可见, 油画质感, 温润古意, 暖意盎然",
-    negative: "photography, photorealistic, photo, camera, lens flare, depth of field, bokeh, film grain, HDR, 摄影, 景深, 虚化, 胶片颗粒, 卡通, 动漫, 3D渲染, 霓虹色",
+    negative: "photography, photorealistic, photo, camera, lens flare, depth of field, bokeh, film grain, HDR, 摄影, 景深, 虚化, 胶片颗粒, 卡通, 动漫, 3D渲染, 霓虹色, 童书插画, 儿童绘本, 幼稚化, Q版, 大头娃娃, childish, children book illustration",
   },
   {
     key: "realistic",
     label: "写实彩色",
     desc: "高细节·丰富色彩·纪实摄影",
     positive: "高细节, 丰富的色彩层次, 自然光影, 纪实摄影, 真实质感",
-    negative: "卡通, 动漫, 插画, 油画, 素描, 3D渲染",
+    negative: "卡通, 动漫, 插画, 油画, 素描, 3D渲染, 童书插画, 儿童绘本, 幼稚化, Q版, childish",
   },
   {
     key: "bw",
@@ -49,7 +49,7 @@ export const IMAGE_STYLES: ImageStyle[] = [
     label: "现代电影",
     desc: "电影颗粒·色彩分级·宽银幕",
     positive: "电影颗粒质感, 色彩分级, 宽银幕构图, 戏剧性光影, 电影感",
-    negative: "卡通, 动漫, 插画, 3D渲染, 平面设计, 扁平化",
+    negative: "卡通, 动漫, 插画, 3D渲染, 平面设计, 扁平化, 童书插画, 幼稚化, Q版, childish",
   },
   {
     key: "epic",
@@ -63,7 +63,7 @@ export const IMAGE_STYLES: ImageStyle[] = [
     label: "复古胶片",
     desc: "80年代柯达·颗粒分明·怀旧色温",
     positive: "80年代柯达胶片摄影质感, 颗粒分明, 怀旧色温, 老电影画面, 复古胶片",
-    negative: "数码感, 高饱和, 卡通, 动漫, 3D渲染, 现代滤镜",
+    negative: "数码感, 高饱和, 卡通, 动漫, 3D渲染, 现代滤镜, 童书插画, 幼稚化, Q版, childish",
   },
   {
     key: "watercolor",

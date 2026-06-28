@@ -5,6 +5,7 @@ import { viralAnalyze } from "./viralAnalyze";
 import { rewrite } from "./rewrite";
 import { storyboard } from "./storyboard";
 import { assetSearch } from "./assetSearch";
+import { director } from "./director";
 import { imageGenerate } from "./imageGenerate";
 import { tts } from "./tts";
 import { subtitleAlign } from "./subtitleAlign";
@@ -18,6 +19,7 @@ export const STEP_REGISTRY: Record<StepName, StepDef> = {
   rewrite,
   storyboard,
   assetSearch,
+  director,
   imageGenerate,
   tts,
   subtitleAlign,

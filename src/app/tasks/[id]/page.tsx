@@ -10,6 +10,7 @@ import { TranscriptPanel } from "./panels/TranscriptPanel";
 import { RewritePanel } from "./panels/RewritePanel";
 import { BookPanel } from "./panels/BookPanel";
 import { StoryboardPanel } from "./panels/StoryboardPanel";
+import { DirectorPanel } from "./panels/DirectorPanel";
 import { TtsPanel } from "./panels/TtsPanel";
 import { ImagePanel } from "./panels/ImagePanel";
 import { StylePanel } from "./panels/StylePanel";
@@ -145,6 +146,7 @@ export default function Workbench({ params }: { params: Promise<{ id: string }> 
         {active === "rewrite" && <RewritePanel {...panelProps} />}
         {active === "book" && <BookPanel {...panelProps} />}
         {active === "storyboard" && <StoryboardPanel {...panelProps} />}
+        {active === "director" && <DirectorPanel {...panelProps} />}
         {active === "tts" && <TtsPanel {...panelProps} />}
         {active === "image" && <ImagePanel {...panelProps} />}
         {active === "style" && <StylePanel {...panelProps} />}

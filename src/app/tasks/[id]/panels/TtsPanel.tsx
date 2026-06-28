@@ -98,9 +98,8 @@ export function TtsPanel({ taskId, detail, reload, navigate }: PanelProps) {
 
   async function next() {
     setBusy(true);
-    await advance(taskId, "image");
     reload();
-    navigate("image");
+    navigate("image"); // 只导航到场景图，生图由场景图面板选好风格后手动触发
     setBusy(false);
   }
 

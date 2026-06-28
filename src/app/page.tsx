@@ -20,6 +20,8 @@ export default function Home() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [queue, setQueue] = useState<QueueSnapshot>({ current: null, waiting: [] });
   const [url, setUrl] = useState("");
+  const [script, setScript] = useState("");
+  const [mode, setMode] = useState<"link" | "script">("link"); // 抖音链接 / 自带文案
   const [track, setTrack] = useState("health");
   const [busy, setBusy] = useState(false);
   const [actionBusy, setActionBusy] = useState<Record<string, boolean>>({});
@@ -56,15 +58,20 @@ export default function Home() {
   }
 
   async function create() {
-    if (!url.trim()) return;
+    const payload =
+      mode === "script"
+        ? { script: script.trim(), track }
+        : { sourceUrl: url.trim(), track };
+    if (mode === "script" ? !payload.script : !payload.sourceUrl) return;
     setBusy(true);
     try {
       await fetch("/api/tasks", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sourceUrl: url, track }),
+        body: JSON.stringify(payload),
       });
       setUrl("");
+      setScript("");
       await load();
     } finally {
       setBusy(false);
@@ -97,34 +104,55 @@ export default function Home() {
         </nav>
       </header>
 
-      <div
-        style={{
-          ...cardStyle,
-          display: "flex",
-          gap: 10,
-          marginBottom: 28,
-          alignItems: "center",
-        }}
-      >
-        <input
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && create()}
-          placeholder="粘贴抖音分享链接，回车或点新建…"
-          style={{ ...inputStyle, flex: 1 }}
-        />
-        <select
-          value={track}
-          onChange={(e) => setTrack(e.target.value)}
-          style={inputStyle}
-        >
-          <option value="health">养生</option>
-          <option value="emotion">情感</option>
-          <option value="parenting">亲子</option>
-        </select>
-        <button onClick={create} disabled={busy} style={btn("primary")}>
-          {busy ? "创建中…" : "新建任务"}
-        </button>
+      <div style={{ ...cardStyle, marginBottom: 28 }}>
+        {/* 模式切换：抖音链接 / 自带文案 */}
+        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+          {([["link", "抖音链接"], ["script", "自带文案"]] as const).map(([m, label]) => (
+            <button
+              key={m}
+              onClick={() => setMode(m)}
+              style={{
+                padding: "6px 16px", borderRadius: 7, fontSize: 13, cursor: "pointer",
+                border: `1.5px solid ${mode === m ? T.accent : T.border}`,
+                background: mode === m ? T.accent : T.panel,
+                color: mode === m ? T.accentText : T.text,
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ display: "flex", gap: 10, alignItems: mode === "script" ? "flex-end" : "center" }}>
+          {mode === "link" ? (
+            <input
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && create()}
+              placeholder="粘贴抖音分享链接，回车或点新建…"
+              style={{ ...inputStyle, flex: 1 }}
+            />
+          ) : (
+            <textarea
+              value={script}
+              onChange={(e) => setScript(e.target.value)}
+              placeholder="粘贴你的口播文案（已定稿，将跳过抖音解析与 AI 改写，直接切分镜→生成）…"
+              style={{ ...inputStyle, flex: 1, minHeight: 120, resize: "vertical", lineHeight: 1.7, fontFamily: "inherit" }}
+            />
+          )}
+          <select
+            value={track}
+            onChange={(e) => setTrack(e.target.value)}
+            style={inputStyle}
+          >
+            <option value="health">养生</option>
+            <option value="emotion">情感</option>
+            <option value="parenting">亲子</option>
+          </select>
+          <button onClick={create} disabled={busy} style={btn("primary")}>
+            {busy ? "创建中…" : "新建任务"}
+          </button>
+        </div>
       </div>
 
       <div
