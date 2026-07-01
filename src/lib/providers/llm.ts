@@ -43,33 +43,51 @@ export async function chat(
     body.response_format = { type: "json_object" };
   }
 
-  const resp = await fetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${key}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => "");
-    throw new Error(`LLM chat HTTP ${resp.status}: ${text.slice(0, 200)}`);
+  // 超时 + 瞬时错误退避重试(阶段5:无超时会永久挂起,无人值守致命)
+  const timeoutMs = Number(env("LLM_TIMEOUT_MS", "120000"));
+  const maxRetry = Number(env("LLM_MAX_RETRY", "2"));
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= maxRetry; attempt++) {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), timeoutMs);
+    try {
+      const resp = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: ac.signal,
+      });
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => "");
+        const msg = `LLM chat HTTP ${resp.status}: ${text.slice(0, 200)}`;
+        // 4xx(非429)确定性失败,不重试
+        if (resp.status < 500 && resp.status !== 429) throw new Error(msg);
+        lastErr = new Error(msg);
+      } else {
+        const json = (await resp.json()) as {
+          choices?: { message?: { content?: string } }[];
+          usage?: { prompt_tokens?: number; completion_tokens?: number };
+        };
+        const content = json.choices?.[0]?.message?.content ?? "";
+        if (!content) throw new Error("LLM chat 返回空内容");
+        const inTok = json.usage?.prompt_tokens ?? 0;
+        const outTok = json.usage?.completion_tokens ?? 0;
+        const priceIn = Number(env("LLM_PRICE_IN_PER_1K", "0"));
+        const priceOut = Number(env("LLM_PRICE_OUT_PER_1K", "0"));
+        const cost = (inTok / 1000) * priceIn + (outTok / 1000) * priceOut;
+        return { content, cost };
+      }
+    } catch (e) {
+      lastErr = e;
+      const m = e instanceof Error ? e.message : String(e);
+      // 确定性 4xx 直接抛
+      if (/HTTP 4\d\d/.test(m) && !/429/.test(m)) throw e;
+    } finally {
+      clearTimeout(timer);
+    }
+    if (attempt < maxRetry) await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
   }
-  const json = (await resp.json()) as {
-    choices?: { message?: { content?: string } }[];
-    usage?: { prompt_tokens?: number; completion_tokens?: number };
-  };
-  const content = json.choices?.[0]?.message?.content ?? "";
-  if (!content) throw new Error("LLM chat 返回空内容");
-
-  // 粗略成本估算（按 token 数，单价由 env 可选配置；默认 0 不计费）
-  const inTok = json.usage?.prompt_tokens ?? 0;
-  const outTok = json.usage?.completion_tokens ?? 0;
-  const priceIn = Number(env("LLM_PRICE_IN_PER_1K", "0"));
-  const priceOut = Number(env("LLM_PRICE_OUT_PER_1K", "0"));
-  const cost = (inTok / 1000) * priceIn + (outTok / 1000) * priceOut;
-
-  return { content, cost };
+  throw lastErr instanceof Error ? lastErr : new Error(`LLM chat 失败: ${String(lastErr)}`);
 }
 
 /** 提取 JSON（容忍 ```json 包裹和前后噪声） */

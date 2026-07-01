@@ -54,9 +54,14 @@ export async function fetchVideo(
   const url =
     `${baseUrl}/api/v1/douyin/web/fetch_one_video_by_share_url` +
     `?share_url=${encodeURIComponent(link)}`;
-  const resp = await fetch(url, {
-    headers: { Authorization: `Bearer ${key}` },
-  });
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), Number(env("TIKHUB_TIMEOUT_MS", "30000")));
+  let resp: Response;
+  try {
+    resp = await fetch(url, { headers: { Authorization: `Bearer ${key}` }, signal: ac.signal });
+  } finally {
+    clearTimeout(timer);
+  }
   if (!resp.ok) {
     const body = await resp.text().catch(() => "");
     throw new Error(`tikhub fetchVideo HTTP ${resp.status}: ${body.slice(0, 200)}`);
@@ -119,8 +124,11 @@ export async function downloadVideo(
     throw new Error("downloadVideo: 无效视频地址");
   }
   const { writeFile } = await import("node:fs/promises");
+  const dlTimeout = Number(env("TIKHUB_DOWNLOAD_TIMEOUT_MS", "120000"));
   let lastErr: unknown;
   for (let attempt = 0; attempt < 3; attempt++) {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), dlTimeout);
     try {
       const resp = await fetch(url, {
         // 抖音 CDN 需要一个常规 UA + referer，否则可能 403
@@ -129,6 +137,7 @@ export async function downloadVideo(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
           Referer: "https://www.douyin.com/",
         },
+        signal: ac.signal,
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const buf = Buffer.from(await resp.arrayBuffer());
@@ -137,6 +146,8 @@ export async function downloadVideo(
     } catch (err) {
       lastErr = err;
       await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
+    } finally {
+      clearTimeout(timer);
     }
   }
   throw new Error(

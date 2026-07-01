@@ -33,14 +33,25 @@ export const rewrite: StepDef = {
           "这本书里讲透了背后的科学道理，跟着做，身体越来越轻松。",
       };
     } else {
-      const { content, cost } = await chat(
-        prompt.system,
-        prompt.build({ transcript: transcript.text, viral }),
-        ctx.mode,
-        { json: true }
-      );
-      ctx.reportCost(cost, { provider: "llm", step: "rewrite" });
-      result = rewriteSchema.parse(JSON.parse(extractJson(content)));
+      // JSON 解析重试(阶段5:LLM 偶发非法 JSON)
+      let lastErr: unknown;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const { content, cost } = await chat(
+          prompt.system,
+          prompt.build({ transcript: transcript.text, viral }),
+          ctx.mode,
+          { json: true }
+        );
+        ctx.reportCost(cost, { provider: "llm", step: "rewrite" });
+        try {
+          result = rewriteSchema.parse(JSON.parse(extractJson(content)));
+          break;
+        } catch (e) {
+          lastErr = e;
+          ctx.log(`改写 JSON 解析失败(第${attempt + 1}次)，重试中…`);
+        }
+      }
+      if (!result!) return { ok: false, error: `改写 JSON 解析失败: ${lastErr}` };
     }
 
     await ctx.writeJSON("rewrite.json", result, {

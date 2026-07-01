@@ -163,38 +163,46 @@ async function transcribeChunk(
     },
   };
 
-  const resp = await fetchWithBackoff(`${cfg.asrBase}/audio/asr/sse`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "text/event-stream",
-      Authorization: `Bearer ${cfg.key}`,
-    },
-    body: JSON.stringify(body),
-  });
-  if (!resp.ok || !resp.body) {
-    const t = await resp.text().catch(() => "");
-    throw new Error(`stepfun ASR HTTP ${resp.status}: ${t.slice(0, 200)}`);
-  }
+  // 整体超时:SSE 流式读取无超时会挂死(阶段5),超时则 abort
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), Number(process.env.STEP_ASR_TIMEOUT_MS ?? "120000"));
+  try {
+    const resp = await fetchWithBackoff(`${cfg.asrBase}/audio/asr/sse`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+        Authorization: `Bearer ${cfg.key}`,
+      },
+      body: JSON.stringify(body),
+      signal: ac.signal,
+    });
+    if (!resp.ok || !resp.body) {
+      const t = await resp.text().catch(() => "");
+      throw new Error(`stepfun ASR HTTP ${resp.status}: ${t.slice(0, 200)}`);
+    }
 
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let finalText = "";
-  for await (const chunk of resp.body as any) {
-    buffer += decoder.decode(chunk, { stream: true });
-    const parsed = parseSse(buffer);
-    buffer = parsed.rest;
-    for (const ev of parsed.events) {
-      if (ev.data === "[DONE]") continue;
-      try {
-        const text = extractText(JSON.parse(ev.data));
-        if (text && text.length >= finalText.length) finalText = text;
-      } catch {
-        /* 跳过非 JSON 事件 */
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let finalText = "";
+    for await (const chunk of resp.body as any) {
+      buffer += decoder.decode(chunk, { stream: true });
+      const parsed = parseSse(buffer);
+      buffer = parsed.rest;
+      for (const ev of parsed.events) {
+        if (ev.data === "[DONE]") continue;
+        try {
+          const text = extractText(JSON.parse(ev.data));
+          if (text && text.length >= finalText.length) finalText = text;
+        } catch {
+          /* 跳过非 JSON 事件 */
+        }
       }
     }
+    return finalText;
+  } finally {
+    clearTimeout(timer);
   }
-  return finalText;
 }
 
 /**
