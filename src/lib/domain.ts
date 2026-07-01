@@ -79,6 +79,8 @@ export const imageItemSchema = z.object({
   prompt: z.string(),
   visual: z.string(), // 冗余存一份(导演 composition)，将来 embed 做复用匹配
   reused: z.boolean().default(false), // 是否来自素材库复用（v1 恒 false）
+  sig: z.string().optional(), // 内容签名(style+ratio+setting+cast+composition),用于幂等续跑:签名不变+文件在则跳过重画
+  manual: z.boolean().optional(), // 用户单图重生成产出,整批重跑时保留不覆盖
 });
 export const imagesSchema = z.object({
   items: z.array(imageItemSchema),
