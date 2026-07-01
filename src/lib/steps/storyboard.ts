@@ -28,8 +28,8 @@ export const storyboard: StepDef = {
           text,
           visual:
             i === 0
-              ? "中老年女性惊讶的表情，温暖厨房背景"
-              : "细胞修复概念图，柔和光线，科普感",
+              ? "人物惊讶的表情特写，温暖室内背景"
+              : "贴合内容的生活场景，柔和自然光",
           estDuration: estimateDuration(text),
         })),
       };

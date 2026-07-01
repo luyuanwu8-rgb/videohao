@@ -94,16 +94,27 @@ export const castSchema = z.object({
   id: z.string(), // 引用键，如 "A"
   bible: z.string(), // 角色设定，如 "65岁中国老年女性,银发,慈祥圆脸,深色开衫"
 });
+// setting: 世界观(阶段4)——导演从文案提取的国籍/族裔/年代/地域,贯穿选角与所有画面,根治"文案讲美国人画面却是中国背景"。
+export const settingSchema = z
+  .object({
+    region: z.string().default(""), // 地域/国籍,如 "美国"/"日本"/"中国"/"古代中国"
+    era: z.string().default(""), // 年代,如 "现代"/"1980年代"/"古代"
+    ethnicity: z.string().default(""), // 族裔/人物外貌基调,如 "白人"/"东亚人"
+    locale: z.string().default(""), // 场景基调,如 "美国乡村"/"东京都市"/"江南水乡"
+    notes: z.string().default(""), // 其他文化/服饰/道具注意
+  })
+  .default({ region: "", era: "", ethnicity: "", locale: "", notes: "" });
 // 画面节拍：覆盖哪几个 scene（→显示时长由这些 scene 配音时长合计）+ 一张图的完整导演设计
 export const beatSchema = z.object({
   id: z.number().int(), // 节拍序号(从1)
-  sceneIds: z.array(z.number().int()), // 本拍覆盖的 scene id（连续，决定该图显示多久）
+  sceneIds: z.array(z.number().int()), // 本拍覆盖的 scene id（连续，决定该图显示多久；长句可多拍共享同一句号=路线C）
   use: z.string().default("空镜"), // "cast:A" / "空镜" / "配角"
   shotType: z.string().default(""), // 景别：面部特写/全景/中景…
   mood: z.string().default(""), // 本拍情绪（服务情绪曲线）
   composition: z.string(), // 构图+光线+场景（喂 image step 的核心）
 });
 export const directorSchema = z.object({
+  setting: settingSchema, // 世界观(国籍/年代/族裔/地域),贯穿全片
   audience: z.string().default(""), // 目标受众（前端可改，导演据此选角）
   theme: z.string().default(""), // 全片母题
   emotionArc: z.string().default(""), // 情绪曲线
@@ -112,6 +123,7 @@ export const directorSchema = z.object({
   beats: z.array(beatSchema), // 画面节拍序列
 });
 export type Cast = z.infer<typeof castSchema>;
+export type Setting = z.infer<typeof settingSchema>;
 export type Beat = z.infer<typeof beatSchema>;
 export type Director = z.infer<typeof directorSchema>;
 

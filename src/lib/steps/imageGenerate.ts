@@ -49,6 +49,20 @@ export function beatToCellPrompt(beat: Beat, plan: Director): string {
   return parts.join("，");
 }
 
+/** 世界观(setting)前缀:注入图 prompt,强化国籍/年代/族裔/场景一致性(阶段4) */
+export function settingText(plan: Director): string {
+  const s = plan.setting;
+  if (!s) return "";
+  const parts = [
+    s.region && `国籍/地域:${s.region}`,
+    s.era && `年代:${s.era}`,
+    s.ethnicity && `人物族裔:${s.ethnicity}`,
+    s.locale && `场景:${s.locale}`,
+  ].filter(Boolean);
+  if (!parts.length) return "";
+  return `【世界观(人物外貌/服饰/建筑/道具/环境须严格符合,不得出现冲突文化元素)】${parts.join("，")}。`;
+}
+
 /** 比例 → 单图请求尺寸字符串(与批量九宫格同档) */
 export function ratioToSize(ratio: string): string {
   return RATIO_GRID_SIZE[ratio] ?? RATIO_GRID_SIZE[DEFAULT_RATIO];
@@ -65,10 +79,12 @@ export function buildSinglePrompt(beat: Beat, plan: Director, style: ImageStyle,
   const base = beatToCellPrompt(beat, plan);
   const negative = [style.negative, COMMON_NEGATIVE].filter(Boolean).join(", ");
   const fb = (feedback ?? "").trim();
+  const setText = settingText(plan);
   const tone = plan.visualTone ? `整片基调:${plan.visualTone}。` : "";
   return (
     `生成一张 ${ratio} 竖版画面。\n` +
     `【画面风格：${style.label}】${style.positive}。\n` +
+    (setText ? setText + "\n" : "") +
     (tone ? tone + "\n" : "") +
     `【画面内容】${base}\n` +
     (fb ? `【务必按以下要求修改，与上文冲突时以此为准】${fb}\n` : "") +
@@ -110,8 +126,9 @@ export const imageGenerate: StepDef = {
     const style = imageStyle(cfg.style);
     const ratio = cfg.ratio;
     const gridSize = RATIO_GRID_SIZE[ratio] ?? RATIO_GRID_SIZE[DEFAULT_RATIO];
-    const globalTone = plan.visualTone ? `整片基调:${plan.visualTone}。` : "";
-    const toneKey = plan.visualTone ?? ""; // 阶段4 加 setting 后并入签名
+    const setText = settingText(plan);
+    const globalTone = (setText ? setText : "") + (plan.visualTone ? `整片基调:${plan.visualTone}。` : "");
+    const toneKey = (plan.visualTone ?? "") + JSON.stringify(plan.setting ?? {}); // 签名并入 setting,setting变则重画
 
     // 全局调速器:跨任务限 gpt-image 并发(默认 2),防两任务同时生图打爆 429
     configureLimiter(

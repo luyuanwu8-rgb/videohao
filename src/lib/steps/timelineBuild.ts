@@ -78,6 +78,10 @@ export const timelineBuild: StepDef = {
     const H = 1920;
     const FPS = 24; // 图书带货(图+字幕+缓慢运镜)24fps 肉眼无差，比 30 少 20% 帧，明显提速
     const durBySc = new Map(voice.segments.map((s) => [s.sceneId, s.duration]));
+    // 路线C(阶段4):一个 scene 可被多拍共享(长句配多图)。统计每句被几张图覆盖,
+    // 按图数均分该句时长,图按节拍顺序连续铺满 → 长台词也有画面变化,音画仍精确对齐。
+    const coverCount = new Map<number, number>();
+    for (const img of images.items) for (const id of img.sceneIds ?? []) coverCount.set(id, (coverCount.get(id) ?? 0) + 1);
 
     // 为单个动效构建一份 timeline
     const buildOne = (motionKey: string): Timeline => {
@@ -105,20 +109,22 @@ export const timelineBuild: StepDef = {
       }
       const totalDur = cursor;
 
-      // 2) 画面线：每张图(节拍)按它覆盖的句子总时长显示，起点 = 首句起点
+      // 2) 画面线:图按节拍顺序连续铺满;每张图时长 = Σ(覆盖句时长 / 该句被几张图共享)
+      let imgCursor = 0;
       for (const img of images.items) {
         const ids = img.sceneIds?.length ? img.sceneIds : [];
         if (!ids.length) continue;
-        const start = sceneStart.get(ids[0]) ?? 0;
-        const imgDur = ids.reduce((sum, id) => sum + (durBySc.get(id) ?? 0), 0) || 0.1;
+        const imgDur =
+          ids.reduce((sum, id) => sum + (durBySc.get(id) ?? 0) / (coverCount.get(id) ?? 1), 0) || 0.1;
         tracks.push({
           type: "image",
           src: img.imagePath,
-          start,
+          start: imgCursor,
           duration: imgDur,
           zoom: preset.zoom,
           sceneId: ids[0],
         });
+        imgCursor += imgDur;
       }
 
       tracks.push({
