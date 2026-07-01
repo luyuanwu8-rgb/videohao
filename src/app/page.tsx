@@ -99,8 +99,9 @@ export default function Home() {
           </p>
         </div>
         <nav style={{ display: "flex", gap: 14, fontSize: 13, paddingTop: 6 }}>
-          <Link href="/prompts" style={{ color: T.accent, textDecoration: "none" }}>提示词管理</Link>
-          <Link href="/settings" style={{ color: T.accent, textDecoration: "none" }}>API 设置</Link>
+          <Link href="/quick" style={{ color: T.accentText, background: T.accent, padding: "6px 14px", borderRadius: 7, textDecoration: "none", fontWeight: 600 }}>⚡ 快速制作</Link>
+          <Link href="/prompts" style={{ color: T.accent, textDecoration: "none", alignSelf: "center" }}>提示词管理</Link>
+          <Link href="/settings" style={{ color: T.accent, textDecoration: "none", alignSelf: "center" }}>API 设置</Link>
         </nav>
       </header>
 

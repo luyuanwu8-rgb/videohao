@@ -25,8 +25,15 @@ export const director: StepDef = {
     const sceneIds = board.scenes.map((s) => s.id);
 
     // 画面密度目标:按文案字数估时(不用不可靠的 estDuration),每张图约 targetSec 秒
+    // targetSec 优先取配置中心写入的 render-config.imageSeconds,否则 env,否则 4.5
     const totalEst = board.scenes.reduce((sum, s) => sum + estimateDuration(s.text), 0);
-    const targetSec = Number(process.env.DIRECTOR_TARGET_SEC ?? "4.5");
+    let targetSec = Number(process.env.DIRECTOR_TARGET_SEC ?? "4.5");
+    try {
+      const rc = await ctx.readJSON<{ imageSeconds?: number }>("render-config.json");
+      if (rc?.imageSeconds && rc.imageSeconds > 0) targetSec = Number(rc.imageSeconds);
+    } catch {
+      /* 无 render-config 走默认 */
+    }
     const targetBeats = Math.max(1, Math.round(totalEst / targetSec));
 
     // 读用户锁定的人物(单任务级)。locked 时导演必须用这些角色,不得自创。

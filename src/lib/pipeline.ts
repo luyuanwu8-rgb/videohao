@@ -77,6 +77,12 @@ export async function createTask(input: {
   title?: string;
   track?: string;
   script?: string; // 自带定稿口播稿(方案B)
+  presets?: {
+    voiceConfig?: unknown; // voice-config.json
+    imageConfig?: unknown; // image-config.json
+    renderConfig?: unknown; // render-config.json(可含 imageSeconds 画面节奏)
+    castConfig?: unknown; // cast-config.json(人物/国籍锁定,可选)
+  };
 }): Promise<Task> {
   const id = randomUUID();
   const track = input.track ?? process.env.DEFAULT_TRACK ?? "health";
@@ -117,6 +123,19 @@ export async function createTask(input: {
     const abs = join(taskDir(id), "rewrite.json");
     await writeFile(abs, JSON.stringify(rewrite, null, 2), "utf-8");
     await registerArtifact(id, "rewrite.json", { fileType: "json", tag: "byo" });
+  }
+
+  // 快速制作:把预设配置一次写入任务目录(各步 try/catch 读取,缺省走默认;此处提前落好)
+  if (input.presets) {
+    const p = input.presets;
+    const writeCfg = async (name: string, data: unknown) => {
+      if (data === undefined || data === null) return;
+      await writeFile(join(taskDir(id), name), JSON.stringify(data, null, 2), "utf-8");
+    };
+    await writeCfg("voice-config.json", p.voiceConfig);
+    await writeCfg("image-config.json", p.imageConfig);
+    await writeCfg("render-config.json", p.renderConfig);
+    await writeCfg("cast-config.json", p.castConfig);
   }
   return task;
 }

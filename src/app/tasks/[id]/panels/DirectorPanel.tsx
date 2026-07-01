@@ -5,8 +5,10 @@ import { T, btn } from "../../../ui/theme";
 import { saveEdit, saveConfig, useArtifact, PanelShell, StepLoader, type PanelProps } from "./shared";
 
 type Cast = { id: string; bible: string };
+type Setting = { region: string; era: string; ethnicity: string; locale: string; notes: string };
 type Beat = { id: number; sceneIds: number[]; use: string; shotType: string; mood: string; composition: string };
 type Director = {
+  setting?: Setting;
   audience: string; theme: string; emotionArc: string; visualTone: string;
   cast: Cast[]; beats: Beat[];
 };
@@ -42,6 +44,13 @@ export function DirectorPanel({ taskId, detail, reload, navigate }: PanelProps) 
 
   function setField<K extends keyof Director>(k: K, v: Director[K]) {
     setD((cur) => (cur ? { ...cur, [k]: v } : cur));
+  }
+  function setSetting(k: keyof Setting, v: string) {
+    setD((cur) =>
+      cur
+        ? { ...cur, setting: { region: "", era: "", ethnicity: "", locale: "", notes: "", ...(cur.setting ?? {}), [k]: v } }
+        : cur
+    );
   }
   function setBeat(i: number, k: keyof Beat, v: string) {
     setD((cur) => {
@@ -129,6 +138,17 @@ export function DirectorPanel({ taskId, detail, reload, navigate }: PanelProps) 
           <div>
             <label style={label}>全局视觉基调（写实度/色调/审美，所有图统一遵守）</label>
             <textarea value={d.visualTone} onChange={(e) => setField("visualTone", e.target.value)} rows={2} style={field} />
+          </div>
+
+          {/* 世界观(导演从文案提取国籍/年代/族裔/场景;可纠正) */}
+          <div style={{ background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 10, padding: 12 }}>
+            <label style={label}>🌍 世界观（导演从文案提取，人物国籍/画面场景据此。若识别有误，改这里纠正）</label>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <input value={d.setting?.region ?? ""} onChange={(e) => setSetting("region", e.target.value)} placeholder="国籍/地域 如 美国" style={{ ...field, width: 150 }} />
+              <input value={d.setting?.era ?? ""} onChange={(e) => setSetting("era", e.target.value)} placeholder="年代 如 现代" style={{ ...field, width: 110 }} />
+              <input value={d.setting?.ethnicity ?? ""} onChange={(e) => setSetting("ethnicity", e.target.value)} placeholder="族裔 如 白人" style={{ ...field, width: 110 }} />
+              <input value={d.setting?.locale ?? ""} onChange={(e) => setSetting("locale", e.target.value)} placeholder="场景 如 美国乡村" style={{ ...field, width: 160 }} />
+            </div>
           </div>
 
           {/* 锁定人物（用户自定义，重跑不被导演覆盖） */}
