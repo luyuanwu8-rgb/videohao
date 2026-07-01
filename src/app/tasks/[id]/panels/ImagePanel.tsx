@@ -16,6 +16,9 @@ export function ImagePanel({ taskId, detail, reload, navigate }: PanelProps) {
   const [busy, setBusy] = useState(false);
   const [zoom, setZoom] = useState<Item | null>(null);
   const [imgCfg, setImgCfg] = useState<ImageConfig>({ style: DEFAULT_STYLE, ratio: "9:16" });
+  const [regenBusy, setRegenBusy] = useState<number | null>(null); // 正在重生成的 beatId
+  const [fb, setFb] = useState<Record<number, string>>({}); // 各图的修改反馈
+  const [ver, setVer] = useState<Record<number, number>>({}); // 各图缓存版本(重生成后刷新)
 
   const status = detail.steps.find((s) => s.name === "imageGenerate")?.status;
   const done = status === "completed";
@@ -70,6 +73,28 @@ export function ImagePanel({ taskId, detail, reload, navigate }: PanelProps) {
     const next = { ...d, items };
     setD(next);
     saveConfig(taskId, "images.json", next); // 软保存,不重置步骤
+  }
+
+  // 单图重生成:针对某一拍单独重画(可带修改反馈),不影响其余图。成功后刷新该图缓存。
+  async function regenOne(beatId: number) {
+    setRegenBusy(beatId);
+    try {
+      const r = await fetch(`/api/tasks/${taskId}/image/regenerate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ beatId, feedback: fb[beatId] ?? "", style: imgCfg.style }),
+      }).then((r) => r.json());
+      if (r.ok) {
+        setVer((v) => ({ ...v, [beatId]: (v[beatId] ?? 0) + 1 })); // 缓存失效,强制重载
+        setFb((f) => ({ ...f, [beatId]: "" }));
+      } else {
+        alert(r.error || "重生成失败");
+      }
+    } catch {
+      alert("重生成请求失败");
+    } finally {
+      setRegenBusy(null);
+    }
   }
 
   const currentStyle = imageStyle(imgCfg.style);
@@ -131,10 +156,10 @@ export function ImagePanel({ taskId, detail, reload, navigate }: PanelProps) {
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
-                src={`/api/tasks/${taskId}/file/${it.imagePath}`}
+                src={`/api/tasks/${taskId}/file/${it.imagePath}?v=${ver[it.beatId] ?? 0}`}
                 alt={`节拍 ${it.beatId}`}
                 onClick={() => setZoom(it)}
-                style={{ width: "100%", aspectRatio: "9/16", objectFit: "cover", display: "block", cursor: "zoom-in" }}
+                style={{ width: "100%", aspectRatio: "9/16", objectFit: "cover", display: "block", cursor: "zoom-in", opacity: regenBusy === it.beatId ? 0.4 : 1 }}
               />
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 6px" }}>
                 <button onClick={() => swapImage(idx, idx - 1)} disabled={idx === 0}
@@ -142,6 +167,23 @@ export function ImagePanel({ taskId, detail, reload, navigate }: PanelProps) {
                 <span style={{ fontSize: 11, color: T.textFaint }}>第 {it.beatId} 拍 · 句 {it.sceneIds.join(",")}</span>
                 <button onClick={() => swapImage(idx, idx + 1)} disabled={idx === d.items.length - 1}
                   title="与下一张换图" style={{ border: "none", background: "transparent", cursor: idx === d.items.length - 1 ? "default" : "pointer", color: idx === d.items.length - 1 ? T.textFaint : T.accent, fontSize: 14 }}>▶</button>
+              </div>
+              {/* 单图重生成:反馈框 + 按钮 */}
+              <div style={{ display: "flex", gap: 4, padding: "0 6px 6px" }}>
+                <input
+                  value={fb[it.beatId] ?? ""}
+                  onChange={(e) => setFb((f) => ({ ...f, [it.beatId]: e.target.value }))}
+                  placeholder="修改意见(可留空)"
+                  style={{ flex: 1, minWidth: 0, fontSize: 11, padding: "3px 6px", borderRadius: 5, border: `1px solid ${T.border}`, background: T.panel, color: T.text }}
+                />
+                <button
+                  onClick={() => regenOne(it.beatId)}
+                  disabled={regenBusy !== null}
+                  title="按修改意见单独重画这一张"
+                  style={{ fontSize: 11, padding: "3px 8px", borderRadius: 5, cursor: regenBusy !== null ? "default" : "pointer", border: `1px solid ${T.border}`, background: T.panel, color: T.accent, whiteSpace: "nowrap" }}
+                >
+                  {regenBusy === it.beatId ? "…" : "🔄重生成"}
+                </button>
               </div>
             </div>
           ))}
