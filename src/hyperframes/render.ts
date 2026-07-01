@@ -41,7 +41,23 @@ function templateDir(): string {
   return join(here, "template");
 }
 
+/**
+ * 渲染调度器(阶段3):默认走 FFmpeg 原生后端(秒级、无网络依赖、画质持平);
+ * FFmpeg 失败则回退 HyperFrames。可用 RENDER_BACKEND=hyperframes 强制走旧后端。
+ */
 export async function renderTimeline(input: RenderInput): Promise<RenderResult> {
+  await mkdir(dirname(join(input.taskDir, input.outRel)), { recursive: true }); // 修 renders/ 未建导致的 ENOENT(阶段0归档)
+  const backend = (process.env.RENDER_BACKEND || "ffmpeg").toLowerCase();
+  if (backend === "ffmpeg") {
+    const { renderTimelineFfmpeg } = await import("./ffmpegRender");
+    const r = await renderTimelineFfmpeg(input);
+    if (r.ok || input.mode === "mock") return r;
+    input.log(`FFmpeg 渲染失败(${r.error}),回退 HyperFrames…`);
+  }
+  return renderHyperframes(input);
+}
+
+async function renderHyperframes(input: RenderInput): Promise<RenderResult> {
   const { timeline, taskDir, outRel, mode, log } = input;
   const outPath = join(taskDir, outRel);
 
@@ -93,6 +109,12 @@ async function renderReal(input: RenderInput): Promise<RenderResult> {
   } else {
     return { ok: false, error: `打包字体缺失: ${fontSrc}` };
   }
+
+  // GSAP 本地化(阶段3):拷进工作区,index.html 相对引用,HF 兜底渲染不再依赖 jsdelivr CDN
+  const gsapSrc = join(templateDir(), "assets", "gsap.min.js");
+  const gsapDst = join(taskDir, "assets", "gsap.min.js");
+  await mkdir(dirname(gsapDst), { recursive: true });
+  if (existsSync(gsapSrc)) await copyFile(gsapSrc, gsapDst);
 
   // --workers：并行多 Chrome 截图，缩短逐帧 capture。每 worker 一个独立无头 Chrome(官方实测各占~256MB，
   //   与你日常开的浏览器是完全独立的进程，不复用不共享——但吃的是同一块物理内存)。
