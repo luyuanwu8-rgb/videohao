@@ -112,3 +112,11 @@ export const directorSchema = z.object({
 export type Cast = z.infer<typeof castSchema>;
 export type Beat = z.infer<typeof beatSchema>;
 export type Director = z.infer<typeof directorSchema>;
+
+// cast-config: 用户锁定的人物(单任务级)。导演面板写入，director step 读取强制使用，
+// 不被导演 LLM 覆盖。locked=true 时导演必须用 cast 里的人物，不得自创。
+export const castConfigSchema = z.object({
+  locked: z.boolean().default(false),
+  cast: z.array(castSchema).default([]),
+});
+export type CastConfig = z.infer<typeof castConfigSchema>;

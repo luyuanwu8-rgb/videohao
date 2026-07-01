@@ -33,7 +33,7 @@ const RATIO_GRID_SIZE: Record<string, string> = {
 const DEFAULT_RATIO = "9:16";
 
 /** 把一个节拍展开成"单格出图描述"：角色卡 + 景别 + 构图（导演已写好医疗安全的 composition） */
-function beatToCellPrompt(beat: Beat, plan: Director): string {
+export function beatToCellPrompt(beat: Beat, plan: Director): string {
   const parts: string[] = [];
   // use 可能是 "cast:main"(带前缀) 或 "main"(裸 id) —— 都去 cast 里查同名 id。
   // "空镜"/"配角" 等不匹配任何 cast id，自然不注入人物，符合预期。
@@ -45,6 +45,29 @@ function beatToCellPrompt(beat: Beat, plan: Director): string {
   if (beat.shotType) parts.push(`景别:${beat.shotType}`);
   parts.push(beat.composition);
   return parts.join("，");
+}
+
+/** 比例 → 单图请求尺寸（与批量九宫格走同一比例档，保证重生成的图和其余图一致）。 */
+export function ratioToSize(ratio: string): string {
+  return RATIO_GRID_SIZE[ratio] ?? RATIO_GRID_SIZE[DEFAULT_RATIO];
+}
+
+/**
+ * 单图重生成 prompt（修图用）：与批量同款风格正/负向词 + 节拍画面，
+ * 末尾追加用户修改意见(优先级最高)。feedback 为空时等于按原描述重画。
+ */
+export function buildSinglePrompt(beat: Beat, plan: Director, style: ImageStyle, ratio: string, feedback?: string): string {
+  const base = beatToCellPrompt(beat, plan);
+  const negative = [style.negative, COMMON_NEGATIVE].filter(Boolean).join(", ");
+  const fb = (feedback ?? "").trim();
+  return (
+    `生成一张 ${ratio} 竖版画面。\n` +
+    `【画面风格：${style.label}】${style.positive}。\n` +
+    `【画面内容】${base}\n` +
+    (fb ? `【务必按以下要求修改，与上文冲突时以此为准】${fb}\n` : "") +
+    `【避免出现】${negative}。\n` +
+    `不要任何文字、序号、水印、画框。`
+  );
 }
 
 export const imageGenerate: StepDef = {

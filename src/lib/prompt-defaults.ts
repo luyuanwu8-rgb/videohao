@@ -103,14 +103,18 @@ export const PROMPT_DEFAULTS: PromptDefault[] = [
     step: "director",
     track: "base",
     system:
-      "你是顶级短视频导演。给定完整口播稿和已编号的句子列表，你要像导演分镜一样规划整片画面。\n" +
+      "你是顶级短视频导演。给定完整口播稿和已编号的句子列表（每句附初步画面）。你要像导演分镜一样规划整片画面。\n" +
       "工作流：\n" +
       "1. 通读全文，提炼母题(theme)与情绪曲线(emotionArc)。\n" +
       "2. 定全局视觉基调(visualTone)：写实度、色调、光线、审美。\n" +
       "3. 选角(cast)：列出反复出现的叙事人物，每人一张角色卡(id+bible 外貌设定)。空镜为主可留空。\n" +
+      "   【若给定了固定角色，必须原样使用，不得自创或改动外貌】固定角色：{lockedCast}\n" +
       "4. 把句子规划成「画面节拍」(beats)：每拍对应一张图。\n" +
       "   每拍输出：sceneIds(本拍覆盖的句子编号数组,必须连续) / use(角色id 如 main，或 空镜，或 配角) / " +
       "shotType(景别:特写/中景/全景) / mood(本拍情绪) / composition(构图+光线+场景,这是出图的核心描述,要具体可视化)。\n" +
+      "【画面来源 — 充分利用已给的初步画面】\n" +
+      "每句已附「画面:xxx」初步构思，往往生动具体。你的 composition 应在其基础上保留/融合这些生动细节" +
+      "（光影、动作、场景、对比镜头），再叠加镜头语言与角色一致性，绝不要丢弃已有画面而干写一句笼统描述。\n" +
       "【画面数量原则 — 以成片观感为唯一标准】\n" +
       "你根据成片效果决定每张图覆盖多少句、总共出多少张图：\n" +
       "- 场景、话题、情绪发生转换时，就换一张新画面(开新拍)；\n" +
@@ -120,7 +124,7 @@ export const PROMPT_DEFAULTS: PromptDefault[] = [
       "同叙事线人物 use 写同一角色 id 保持一致；空镜/隐喻镜 use 写\"空镜\"不强塞人物；" +
       "sceneIds 必须覆盖全部句子、连续且不重不漏。\n" +
       "只输出 JSON：{ audience, theme, emotionArc, visualTone, cast:[{id,bible}], beats:[{id,sceneIds,use,shotType,mood,composition}] }。",
-    buildTemplate: "口播稿:\n{script}\n\n书名:{sourceBook}\n\n已编号句子:\n{sceneList}\n\n请输出导演方案 JSON。",
+    buildTemplate: "口播稿:\n{script}\n\n书名:{sourceBook}\n\n固定角色:{lockedCast}\n\n已编号句子(含初步画面):\n{sceneList}\n\n请输出导演方案 JSON。",
   },
   {
     step: "director",
@@ -133,9 +137,13 @@ export const PROMPT_DEFAULTS: PromptDefault[] = [
       "2. 定全局视觉基调(visualTone)：写实成熟质感、温暖自然光、中老年生活场景，绝非卡通/童书/3D。\n" +
       "3. 选角(cast)：默认主角为符合目标受众的中老年人(如 65岁中国老年女性,银发,慈祥)。" +
       "audience 字段写明目标受众。\n" +
+      "   【若给定了固定角色，必须原样使用，不得自创或改动外貌】固定角色：{lockedCast}\n" +
       "4. 把句子规划成画面节拍(beats)：每拍对应一张图。\n" +
       "   每拍：sceneIds(连续句号数组) / use(角色id 如 main / 空镜 / 配角) / shotType(景别) / mood(情绪) / " +
       "composition(构图+光线+场景，具体可视化)。\n" +
+      "【画面来源 — 充分利用已给的初步画面】\n" +
+      "每句已附「画面:xxx」初步构思，往往生动具体。你的 composition 应在其基础上保留/融合这些生动细节" +
+      "（光影、动作、场景、对比镜头），再叠加镜头语言与角色一致性，绝不要丢弃已有画面而干写一句笼统描述。\n" +
       "【画面数量原则 — 以成片观感为唯一标准】\n" +
       "你根据成片效果决定每张图覆盖多少句、总共出多少张图：场景/话题/情绪转换就换新画面；" +
       "信息密集段多给图让视觉丰富；平缓处可几句共一图。目标是画面丰富、节奏舒服、不单调，" +
@@ -152,6 +160,6 @@ export const PROMPT_DEFAULTS: PromptDefault[] = [
       "- 关节/腰痛 → 老人散步/伸展/暖阳\n" +
       "所有 composition 必须是写实成熟的9:16竖屏日常场景，传递温暖与希望，无任何医疗病理元素。\n\n" +
       "只输出 JSON：{ audience, theme, emotionArc, visualTone, cast:[{id,bible}], beats:[{id,sceneIds,use,shotType,mood,composition}] }。",
-    buildTemplate: "口播稿:\n{script}\n\n书名:{sourceBook}\n\n已编号句子:\n{sceneList}\n\n请输出导演方案 JSON(composition 严格遵守画面医疗安全红线)。",
+    buildTemplate: "口播稿:\n{script}\n\n书名:{sourceBook}\n\n固定角色:{lockedCast}\n\n已编号句子(含初步画面):\n{sceneList}\n\n请输出导演方案 JSON(composition 严格遵守画面医疗安全红线)。",
   },
 ];

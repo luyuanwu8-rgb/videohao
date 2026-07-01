@@ -1,7 +1,7 @@
 import type { StepDef } from "./types";
 import { chat, extractJson } from "@/lib/providers/llm";
 import { loadPrompt } from "@/lib/prompts";
-import { storyboardSchema, rewriteSchema, directorSchema, type Director } from "@/lib/domain";
+import { storyboardSchema, rewriteSchema, directorSchema, castConfigSchema, type Director } from "@/lib/domain";
 
 /**
  * director: 顶级导演层。读改写稿(剧本) + 分镜(已切好的句级 scene)，
@@ -22,6 +22,15 @@ export const director: StepDef = {
     const rw = rewriteSchema.parse(await ctx.readJSON("rewrite.json"));
     const sceneIds = board.scenes.map((s) => s.id);
 
+    // 读用户锁定的人物(单任务级)。locked 时导演必须用这些角色,不得自创。
+    let lockedCast: { id: string; bible: string }[] | null = null;
+    try {
+      const cc = castConfigSchema.parse(await ctx.readJSON("cast-config.json"));
+      if (cc.locked && cc.cast.length) lockedCast = cc.cast;
+    } catch {
+      /* 无锁定配置,导演自动选角 */
+    }
+
     let plan: Director;
     if (ctx.mode === "mock") {
       // mock：每 3 句归一拍，造占位导演方案
@@ -31,7 +40,7 @@ export const director: StepDef = {
         beats.push({
           id: beats.length + 1,
           sceneIds: group.map((s) => s.id),
-          use: "cast:A",
+          use: lockedCast ? lockedCast[0].id : "cast:A",
           shotType: "中景",
           mood: "平和",
           composition: group[0].visual || "温暖生活场景",
@@ -42,19 +51,25 @@ export const director: StepDef = {
         theme: "顺应身体的智慧",
         emotionArc: "焦虑 → 好奇 → 释然",
         visualTone: "写实纪实质感,温暖自然光,成熟审美,绝非卡通",
-        cast: [{ id: "A", bible: "65岁中国老年女性,银发,慈祥圆脸,深色对襟开衫" }],
+        cast: lockedCast ?? [{ id: "A", bible: "65岁中国老年女性,银发,慈祥圆脸,深色对襟开衫" }],
         beats,
       };
     } else {
       const prompt = await loadPrompt("director", ctx.track);
-      // 把分镜句子编号喂给导演，让它按 sceneId 归并节拍
-      const sceneList = board.scenes.map((s) => `[${s.id}] ${s.text}`).join("\n");
+      // 把分镜句子编号+初步画面喂给导演：text 给口播，visual 给已构思好的生动画面(导演应保留/融合)
+      const sceneList = board.scenes
+        .map((s) => `[${s.id}] 口播:${s.text}${s.visual ? ` | 画面:${s.visual}` : ""}`)
+        .join("\n");
+      // 锁定人物时，把固定角色作为硬约束注入(prompt 模板含 {lockedCast} 占位)
+      const lockedCastText = lockedCast
+        ? lockedCast.map((c) => `${c.id}: ${c.bible}`).join("；")
+        : "（无，由你按受众自行选角）";
       let parsed: Director | null = null;
       let lastErr: unknown;
       for (let attempt = 0; attempt < 3; attempt++) {
         const { content, cost } = await chat(
           prompt.system,
-          prompt.build({ script: rw.script, sourceBook: rw.sourceBook, sceneList }),
+          prompt.build({ script: rw.script, sourceBook: rw.sourceBook, sceneList, lockedCast: lockedCastText }),
           ctx.mode,
           { json: true }
         );
@@ -69,6 +84,8 @@ export const director: StepDef = {
       }
       if (!parsed) return { ok: false, error: `导演方案解析失败: ${lastErr}` };
       plan = parsed;
+      // 锁定人物：强制覆盖 LLM 输出的 cast，保证 100% 用用户定义的人物
+      if (lockedCast) plan.cast = lockedCast;
     }
 
     // 兜底校验：确保每个 sceneId 都被某拍覆盖（导演可能漏分），漏的并入最后一拍
