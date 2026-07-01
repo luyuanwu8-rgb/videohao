@@ -22,9 +22,9 @@ export async function POST(
   }
   if (t.status === "paused") {
     await db.update(tasks).set({ status: "running", updatedAt: now() }).where(eq(tasks.id, id));
-    // 恢复：重新推进流水线（后台继续跑）
-    const { advanceTo } = await import("@/lib/pipeline");
-    void advanceTo(id, "final").catch(() => {});
+    // 恢复：重新入渲染队列(串行,不绕过队列 —— 见 F4),而非直接 advanceTo
+    const { enqueue } = await import("@/lib/renderQueue");
+    void enqueue(id).catch(() => {});
     return NextResponse.json({ ok: true, status: "running" });
   }
   return NextResponse.json({ ok: false, error: `cannot pause status=${t.status}` }, { status: 400 });

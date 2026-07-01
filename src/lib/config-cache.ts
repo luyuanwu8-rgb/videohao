@@ -38,7 +38,15 @@ export async function refreshConfigCache(): Promise<void> {
   }
 }
 
-/** 确保缓存至少加载过一次(幂等,首次才真正查库) */
+/** 确保缓存至少加载过一次(幂等,首次才真正查库)。
+ * once-promise 串行化:并发首次调用只触发一次 refresh,避免 clear()+填充 与 getConfig 撕裂(F5)。 */
+let loadOnce: Promise<void> | null = null;
 export async function ensureConfigLoaded(): Promise<void> {
-  if (!loaded) await refreshConfigCache();
+  if (loaded) return;
+  if (!loadOnce) {
+    loadOnce = refreshConfigCache().finally(() => {
+      loadOnce = null;
+    });
+  }
+  await loadOnce;
 }

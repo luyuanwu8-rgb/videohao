@@ -2,8 +2,9 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { eq, and } from "drizzle-orm";
-import { db } from "@/db/client";
+import { db, dbReady } from "@/db/client";
 import { tasks, steps as stepsTable, artifacts } from "@/db/schema";
+import { logLine } from "@/lib/logger";
 import type { Task } from "@/db/schema";
 import {
   PIPELINE_DEPS,
@@ -23,6 +24,49 @@ export function taskDir(taskId: string): string {
 
 function now(): number {
   return Math.floor(Date.now() / 1000);
+}
+
+/**
+ * 每任务互斥锁(阶段0)—— 同一任务同时只允许一个操作,杜绝双击/轮询/队列竞态并发写。
+ * - withTaskLock:阻塞式获取(队列 worker、advanceTo、runPipeline 用),排队等待。
+ * - tryRunStep:尝试式(HTTP /run 用),任务忙则立即返回"处理中",避免 HTTP 挂起数分钟(D1)。
+ * 锁在最外层操作持有,内部调 runStepUnlocked,避免重入死锁。
+ */
+const taskLocked = new Set<string>();
+const taskWaiters = new Map<string, Array<() => void>>();
+
+function acquireTaskLock(taskId: string): Promise<void> {
+  if (!taskLocked.has(taskId)) {
+    taskLocked.add(taskId);
+    return Promise.resolve();
+  }
+  return new Promise<void>((res) => {
+    const arr = taskWaiters.get(taskId) ?? [];
+    arr.push(res);
+    taskWaiters.set(taskId, arr);
+  });
+}
+function releaseTaskLock(taskId: string): void {
+  const arr = taskWaiters.get(taskId);
+  if (arr && arr.length) {
+    const next = arr.shift()!;
+    next(); // 锁保持占用,直接移交下一个等待者
+  } else {
+    taskLocked.delete(taskId);
+    taskWaiters.delete(taskId);
+  }
+}
+async function withTaskLock<T>(taskId: string, fn: () => Promise<T>): Promise<T> {
+  await acquireTaskLock(taskId);
+  try {
+    return await fn();
+  } finally {
+    releaseTaskLock(taskId);
+  }
+}
+/** 任务是否正被占用(忙) */
+export function isTaskBusy(taskId: string): boolean {
+  return taskLocked.has(taskId);
 }
 
 /** 创建任务 + 初始化所有 step 行为 pending。
@@ -152,13 +196,26 @@ async function registerArtifact(
   });
 }
 
-/** 跑单个 step（支持重跑：会重置该 step 及其下游为 pending 由调用方决定） */
+/** 跑单个 step(公开入口,供 HTTP /run 用):tryLock —— 任务忙则立即返回,不阻塞 HTTP(D1)。 */
 export async function runStep(
   taskId: string,
   name: StepName,
   onLog?: (m: string) => void
 ): Promise<{ ok: boolean; error?: string }> {
-  // 确保 API 配置缓存已加载(前端可编辑的 api_configs → env() 同步读)
+  if (isTaskBusy(taskId)) {
+    return { ok: false, error: "任务正在处理中，请稍候再试" };
+  }
+  return withTaskLock(taskId, () => runStepUnlocked(taskId, name, onLog));
+}
+
+/** 跑单个 step(内部无锁实现;调用方须已持有该任务的锁)。 */
+async function runStepUnlocked(
+  taskId: string,
+  name: StepName,
+  onLog?: (m: string) => void
+): Promise<{ ok: boolean; error?: string }> {
+  // 确保 DB 就绪(WAL/busy_timeout 生效)+ API 配置缓存已加载
+  await dbReady;
   const { ensureConfigLoaded } = await import("@/lib/config-cache");
   await ensureConfigLoaded();
 
@@ -175,9 +232,11 @@ export async function runStep(
   const logs: string[] = [];
   const log = (m: string) => {
     logs.push(m);
+    logLine(taskId, { step: name, msg: m }); // 持久化日志
     onLog?.(m);
   };
 
+  logLine(taskId, { step: name, msg: `▶ 开始 ${name}` });
   await db
     .update(stepsTable)
     .set({ status: "running", startedAt: now(), error: null })
@@ -204,9 +263,13 @@ export async function runStep(
         usage: usageAcc,
       })
       .where(and(eq(stepsTable.taskId, taskId), eq(stepsTable.name, name)));
+    if (result.ok) logLine(taskId, { step: name, msg: `✔ 完成 ${name}` });
+    else logLine(taskId, { level: "error", step: name, msg: `✘ 失败 ${name}: ${result.error ?? ""}` });
     return result;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error ? err.stack : undefined;
+    logLine(taskId, { level: "error", step: name, msg: `✘ 异常 ${name}: ${msg}`, stack });
     await db
       .update(stepsTable)
       .set({ status: "failed", endedAt: now(), error: msg, cost: costAcc })
@@ -227,37 +290,40 @@ export async function advanceTo(
   const targets = stepsUpTo(checkpointKey);
   if (targets.length === 0) return { ok: true }; // 纯配置检查点,无引擎步
 
-  await db
-    .update(tasks)
-    .set({ status: "running", error: null, updatedAt: now() })
-    .where(eq(tasks.id, taskId));
+  // 全程持有任务锁:期间该任务的其他操作(/run 等)排队或被拒,杜绝并发写
+  return withTaskLock(taskId, async () => {
+    await db
+      .update(tasks)
+      .set({ status: "running", error: null, updatedAt: now() })
+      .where(eq(tasks.id, taskId));
 
-  const rows = await db.select().from(stepsTable).where(eq(stepsTable.taskId, taskId));
-  const statusByName = new Map(rows.map((r) => [r.name as StepName, r.status]));
+    const rows = await db.select().from(stepsTable).where(eq(stepsTable.taskId, taskId));
+    const statusByName = new Map(rows.map((r) => [r.name as StepName, r.status]));
 
-  for (const name of targets) {
-    // 每步开始前检查是否已被暂停
-    const taskNow = (await db.select().from(tasks).where(eq(tasks.id, taskId)))[0];
-    if (taskNow?.status === "paused") return { ok: true }; // 暂停：安静退出，不标失败
-    if (statusByName.get(name) === "completed") continue; // 幂等跳过
-    onLog?.(`▶ ${name}`);
-    const res = await runStep(taskId, name, onLog);
-    if (!res.ok) {
-      await db
-        .update(tasks)
-        .set({ status: "failed", error: res.error, updatedAt: now() })
-        .where(eq(tasks.id, taskId));
-      return { ok: false, failedAt: name, error: res.error };
+    for (const name of targets) {
+      // 每步开始前检查是否已被暂停
+      const taskNow = (await db.select().from(tasks).where(eq(tasks.id, taskId)))[0];
+      if (taskNow?.status === "paused") return { ok: true }; // 暂停：安静退出，不标失败
+      if (statusByName.get(name) === "completed") continue; // 幂等跳过
+      onLog?.(`▶ ${name}`);
+      const res = await runStepUnlocked(taskId, name, onLog);
+      if (!res.ok) {
+        await db
+          .update(tasks)
+          .set({ status: "failed", error: res.error, updatedAt: now() })
+          .where(eq(tasks.id, taskId));
+        return { ok: false, failedAt: name, error: res.error };
+      }
     }
-  }
 
-  // 跑到末检查点才算 completed,否则保持 running 以示"还有后续步"
-  const isFinal = checkpointKey === CHECKPOINTS[CHECKPOINTS.length - 1].key;
-  await db
-    .update(tasks)
-    .set({ status: isFinal ? "completed" : "running", updatedAt: now() })
-    .where(eq(tasks.id, taskId));
-  return { ok: true };
+    // 跑到末检查点才算 completed,否则保持 running 以示"还有后续步"
+    const isFinal = checkpointKey === CHECKPOINTS[CHECKPOINTS.length - 1].key;
+    await db
+      .update(tasks)
+      .set({ status: isFinal ? "completed" : "running", updatedAt: now() })
+      .where(eq(tasks.id, taskId));
+    return { ok: true };
+  });
 }
 
 /**
@@ -308,26 +374,28 @@ export async function runPipeline(
   taskId: string,
   onLog?: (m: string) => void
 ): Promise<{ ok: boolean; failedAt?: StepName; error?: string }> {
-  await db
-    .update(tasks)
-    .set({ status: "running", updatedAt: now() })
-    .where(eq(tasks.id, taskId));
+  return withTaskLock(taskId, async () => {
+    await db
+      .update(tasks)
+      .set({ status: "running", updatedAt: now() })
+      .where(eq(tasks.id, taskId));
 
-  for (const name of PIPELINE_ORDER) {
-    onLog?.(`▶ ${name}`);
-    const res = await runStep(taskId, name, onLog);
-    if (!res.ok) {
-      await db
-        .update(tasks)
-        .set({ status: "failed", error: res.error, updatedAt: now() })
-        .where(eq(tasks.id, taskId));
-      return { ok: false, failedAt: name, error: res.error };
+    for (const name of PIPELINE_ORDER) {
+      onLog?.(`▶ ${name}`);
+      const res = await runStepUnlocked(taskId, name, onLog);
+      if (!res.ok) {
+        await db
+          .update(tasks)
+          .set({ status: "failed", error: res.error, updatedAt: now() })
+          .where(eq(tasks.id, taskId));
+        return { ok: false, failedAt: name, error: res.error };
+      }
     }
-  }
 
-  await db
-    .update(tasks)
-    .set({ status: "completed", updatedAt: now() })
-    .where(eq(tasks.id, taskId));
-  return { ok: true };
+    await db
+      .update(tasks)
+      .set({ status: "completed", updatedAt: now() })
+      .where(eq(tasks.id, taskId));
+    return { ok: true };
+  });
 }
