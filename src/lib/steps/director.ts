@@ -1,5 +1,5 @@
 import type { StepDef } from "./types";
-import { chat, extractJson } from "@/lib/providers/llm";
+import { chat, parseJsonRobust } from "@/lib/providers/llm";
 import { loadPrompt } from "@/lib/prompts";
 import { storyboardSchema, rewriteSchema, directorSchema, castConfigSchema, type Director } from "@/lib/domain";
 import { estimateDuration } from "@/lib/providers/stepfun";
@@ -95,7 +95,7 @@ export const director: StepDef = {
           { json: true }
         );
         ctx.reportCost(cost, { provider: "llm", step: "director-setting" });
-        const s = JSON.parse(extractJson(content));
+        const s = await parseJsonRobust<{ region?: string; era?: string; ethnicity?: string; locale?: string }>(content, ctx.mode);
         setting = {
           region: String(s.region ?? ""), era: String(s.era ?? ""),
           ethnicity: String(s.ethnicity ?? ""), locale: String(s.locale ?? ""), notes: "",
@@ -126,7 +126,7 @@ export const director: StepDef = {
         const { content, cost } = await chat(prompt.system, userMsg, ctx.mode, { json: true });
         ctx.reportCost(cost, { provider: "llm", step: "director" });
         try {
-          const p = directorSchema.parse(JSON.parse(extractJson(content)));
+          const p = directorSchema.parse(await parseJsonRobust(content, ctx.mode));
           // 密度校验:偏少则带反馈重试增密(保留本次作兜底)
           if (p.beats.length < minBeats && attempt < 2) {
             parsed = p;
@@ -197,7 +197,7 @@ async function classifyCtaScenes(
   );
   ctx.reportCost(cost, { provider: "llm", step: "director-cta" });
   try {
-    const j = JSON.parse(extractJson(content)) as { ctaIds?: number[] };
+    const j = await parseJsonRobust<{ ctaIds?: number[] }>(content, "real");
     return new Set((j.ctaIds ?? []).filter((n) => Number.isInteger(n)));
   } catch {
     return new Set();

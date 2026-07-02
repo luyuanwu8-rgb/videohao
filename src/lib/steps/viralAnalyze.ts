@@ -1,5 +1,5 @@
 import type { StepDef } from "./types";
-import { chat, extractJson } from "@/lib/providers/llm";
+import { chat, parseJsonRobust } from "@/lib/providers/llm";
 import { loadPrompt } from "@/lib/prompts";
 import { viralSchema, transcriptSchema, type Viral } from "@/lib/domain";
 
@@ -35,7 +35,7 @@ export const viralAnalyze: StepDef = {
         );
         ctx.reportCost(cost, { provider: "llm", step: "viralAnalyze" });
         try {
-          viral = viralSchema.parse(JSON.parse(extractJson(content)));
+          viral = viralSchema.parse(await parseJsonRobust(content, ctx.mode));
           break;
         } catch (e) {
           lastErr = e;

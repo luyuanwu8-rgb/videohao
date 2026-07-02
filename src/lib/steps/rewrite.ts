@@ -1,5 +1,5 @@
 import type { StepDef } from "./types";
-import { chat, extractJson } from "@/lib/providers/llm";
+import { chat, parseJsonRobust } from "@/lib/providers/llm";
 import { loadPrompt } from "@/lib/prompts";
 import {
   rewriteSchema,
@@ -44,7 +44,7 @@ export const rewrite: StepDef = {
         );
         ctx.reportCost(cost, { provider: "llm", step: "rewrite" });
         try {
-          result = rewriteSchema.parse(JSON.parse(extractJson(content)));
+          result = rewriteSchema.parse(await parseJsonRobust(content, ctx.mode));
           break;
         } catch (e) {
           lastErr = e;

@@ -1,5 +1,5 @@
 import type { StepDef } from "./types";
-import { chat, extractJson } from "@/lib/providers/llm";
+import { chat, parseJsonRobust } from "@/lib/providers/llm";
 import { loadPrompt } from "@/lib/prompts";
 import { storyboardSchema, rewriteSchema, type Storyboard } from "@/lib/domain";
 import { estimateDuration } from "@/lib/providers/stepfun";
@@ -45,7 +45,7 @@ export const storyboard: StepDef = {
         );
         ctx.reportCost(cost, { provider: "llm", step: "storyboard" });
         try {
-          board = storyboardSchema.parse(JSON.parse(extractJson(content)));
+          board = storyboardSchema.parse(await parseJsonRobust(content, ctx.mode));
           break; // 成功就退出重试
         } catch (e) {
           lastErr = e;
