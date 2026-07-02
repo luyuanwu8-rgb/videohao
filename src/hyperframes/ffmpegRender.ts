@@ -116,9 +116,12 @@ async function renderClip(
 
   let args: string[];
   if (existsSync(o.srcAbs)) {
+    // 消抖关键:zoompan 在超采样分辨率(SW×SH)上做,输出也是 SW×SH,再 lanczos 降采样到 W×H。
+    // 降采样把每帧亚像素平移的 ±1px 抖动平均掉 → 丝滑。直接在 1x 上 zoompan 会抖。
     const vf =
       `scale=${SW}:${SH}:force_original_aspect_ratio=increase,crop=${SW}:${SH},` +
-      `zoompan=z='${zexpr}':d=${frames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${o.W}x${o.H}:fps=${o.fps},` +
+      `zoompan=z='${zexpr}':d=${frames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${SW}x${SH}:fps=${o.fps},` +
+      `scale=${o.W}:${o.H}:flags=lanczos,` +
       fade + color + `format=yuv420p`;
     args = ["-y", "-loglevel", "error", "-i", o.srcAbs, "-vf", vf, "-frames:v", String(frames),
             "-r", String(o.fps), "-c:v", "libx264", "-preset", o.x264preset, "-pix_fmt", "yuv420p", o.outName];
@@ -146,7 +149,7 @@ export async function renderTimelineFfmpeg(input: RenderInput): Promise<RenderRe
   const { width: W, height: H, fps } = timeline;
   const preset = motionPreset(timeline.motion ?? DEFAULT_MOTION);
   const colorFilter = cssFilterToFfmpeg(preset.filter);
-  const ss = Number(process.env.FFRENDER_SUPERSAMPLE ?? "1.5");
+  const ss = Number(process.env.FFRENDER_SUPERSAMPLE ?? "2"); // 消抖超采样倍数(2x zoompan 再降采样)
   const x264preset = process.env.FFRENDER_X264_PRESET || "medium";
 
   const work = join(taskDir, "renders", `ffwork-${Date.now()}`);

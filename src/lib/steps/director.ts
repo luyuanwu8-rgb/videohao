@@ -81,6 +81,33 @@ export const director: StepDef = {
       };
     } else {
       const prompt = await loadPrompt("director", ctx.track);
+
+      // 第一步:专注的"世界观提取"独立调用(单一任务→可靠,不像复杂规划里 setting 总被跳过)
+      let setting = { region: "", era: "", ethnicity: "", locale: "", notes: "" };
+      try {
+        const { content, cost } = await chat(
+          "你是文案世界观分析助手。判定这段文案主角/主要人物的国籍族裔与场景,供后续画面严格遵循。" +
+            "依据:人物名字(洛朗/艾琳娜/John/Emma→西方欧美, 田中/村上/佐藤→日本, 金/朴→韩国, 张伟/李娜→中国)、地名、文化线索。" +
+            "只输出 JSON:{region(国籍/地域,如 法国/美国/日本/中国), era(年代,如 现代/1980年代/古代), ethnicity(族裔外貌,如 白人/东亚人/黑人), locale(场景基调,如 法国乡村/东京都市/中国城镇)}。" +
+            "无任何线索才填 region:中国, era:现代, ethnicity:东亚人, locale:中国城乡。",
+          `文案:\n${rw.script}\n\n请输出世界观 JSON。`,
+          ctx.mode,
+          { json: true }
+        );
+        ctx.reportCost(cost, { provider: "llm", step: "director-setting" });
+        const s = JSON.parse(extractJson(content));
+        setting = {
+          region: String(s.region ?? ""), era: String(s.era ?? ""),
+          ethnicity: String(s.ethnicity ?? ""), locale: String(s.locale ?? ""), notes: "",
+        };
+        ctx.log(`世界观提取: ${[setting.region, setting.era, setting.ethnicity, setting.locale].filter(Boolean).join(" / ") || "默认中国"}`);
+      } catch (e) {
+        ctx.log(`世界观提取失败,退回中国默认: ${e instanceof Error ? e.message : e}`);
+        setting = { region: "中国", era: "现代", ethnicity: "东亚人", locale: "中国城乡", notes: "提取失败默认" };
+      }
+      const worldview =
+        `国籍/地域:${setting.region || "中国"} | 年代:${setting.era || "现代"} | 人物族裔:${setting.ethnicity || "东亚人"} | 场景基调:${setting.locale || "中国城乡"}`;
+
       const sceneList = board.scenes
         .map((s) => `[${s.id}] 口播:${s.text}${s.visual ? ` | 画面:${s.visual}` : ""}`)
         .join("\n");
@@ -94,7 +121,7 @@ export const director: StepDef = {
       const minBeats = Math.max(1, Math.floor(targetBeats * 0.6));
       for (let attempt = 0; attempt < 3; attempt++) {
         const userMsg =
-          prompt.build({ script: rw.script, sourceBook: rw.sourceBook, sceneList, lockedCast: lockedCastText, targetBeats, targetSec }) +
+          prompt.build({ script: rw.script, sourceBook: rw.sourceBook, sceneList, lockedCast: lockedCastText, targetBeats, targetSec, worldview }) +
           feedback;
         const { content, cost } = await chat(prompt.system, userMsg, ctx.mode, { json: true });
         ctx.reportCost(cost, { provider: "llm", step: "director" });
@@ -116,8 +143,22 @@ export const director: StepDef = {
       }
       if (!parsed) return { ok: false, error: `导演方案解析失败: ${lastErr}` };
       plan = parsed;
-      // 锁定人物:强制覆盖 LLM 的 cast(setting 仍用 LLM 提取的)
+      plan.setting = setting; // 强制用提取到的世界观(复杂规划调用里的 setting 常空,不信任)
+      // 锁定人物:强制覆盖 LLM 的 cast
       if (lockedCast) plan.cast = lockedCast;
+
+      // 话术句归并(确定性兜底):独立分类"哪些句是无画面价值的话术句"→ 强制并入相邻内容拍,
+      // 不让它们单独开拍配突兀的图。prompt 软引导不可靠(LLM 常仍单独开拍),故加此硬保证。
+      try {
+        const ctaIds = await classifyCtaScenes(board.scenes, ctx);
+        if (ctaIds.size) {
+          const before = plan.beats.length;
+          plan.beats = mergeCtaBeats(plan.beats, ctaIds);
+          if (plan.beats.length !== before) ctx.log(`话术句归并: ${before}→${plan.beats.length} 拍(套话句并入相邻拍,不单独配图)`);
+        }
+      } catch (e) {
+        ctx.log(`话术句分类跳过: ${e instanceof Error ? e.message : e}`);
+      }
     }
 
     // 兜底校验:确保每个 sceneId 都被某拍覆盖(允许被多拍共享),漏的并入末拍
@@ -137,3 +178,58 @@ export const director: StepDef = {
     return { ok: true };
   },
 };
+
+/** 独立分类:哪些 scene 是"无画面价值的话术句"(购买/关注引导、免责声明、泛泛收尾)。
+ * 单一任务→LLM 判定可靠;基于语义功能而非关键词。返回话术句 sceneId 集合。 */
+async function classifyCtaScenes(
+  scenes: { id: number; text: string }[],
+  ctx: { mode: "mock" | "real"; reportCost: (c: number, u?: Record<string, unknown>) => void }
+): Promise<Set<number>> {
+  if (ctx.mode === "mock") return new Set();
+  const list = scenes.map((s) => `[${s.id}] ${s.text}`).join("\n");
+  const { content, cost } = await chat(
+    "你是文案分析助手。判定下列每个句子是否为'话术句'——即只做购买引导、关注/点赞/收藏互动引导、免责声明、或泛泛收尾(如'书里都有')," +
+      "不描述任何能画出来的具体情节/人物/动作/场景。判定看功能不看具体用词。" +
+      "只输出 JSON:{ctaIds: number[]},列出所有话术句的编号;没有则空数组。",
+    `句子列表:\n${list}\n\n请输出话术句编号 JSON。`,
+    "real",
+    { json: true }
+  );
+  ctx.reportCost(cost, { provider: "llm", step: "director-cta" });
+  try {
+    const j = JSON.parse(extractJson(content)) as { ctaIds?: number[] };
+    return new Set((j.ctaIds ?? []).filter((n) => Number.isInteger(n)));
+  } catch {
+    return new Set();
+  }
+}
+
+/** 确定性归并:凡"整拍只含话术句"的拍,并入相邻内容拍(优先前一拍,首拍则并入后一拍),
+ * 保证套话句绝不单独占一张图。sceneId 全保留、排序、不丢弃。含内容句的混合拍不动。 */
+function mergeCtaBeats<T extends { id: number; sceneIds: number[] }>(beats: T[], ctaIds: Set<number>): T[] {
+  const isCtaOnly = (b: T) => b.sceneIds.length > 0 && b.sceneIds.every((id) => ctaIds.has(id));
+  const out: T[] = [];
+  const pending: number[] = []; // 首部连续话术句,暂存待并入后续首个内容拍
+  for (const b of beats) {
+    if (isCtaOnly(b)) {
+      if (out.length > 0) {
+        // 并入前一个已保留的拍(沿用其画面)
+        out[out.length - 1].sceneIds.push(...b.sceneIds);
+      } else {
+        pending.push(...b.sceneIds); // 还没有内容拍,暂存
+      }
+    } else {
+      if (pending.length) { b.sceneIds.unshift(...pending); pending.length = 0; }
+      out.push(b);
+    }
+  }
+  // 全片都是话术句的极端情况:保留原样(至少有图),把 pending 并入末拍
+  if (pending.length) {
+    if (out.length) out[out.length - 1].sceneIds.push(...pending);
+    else return beats;
+  }
+  // 每拍 sceneId 去重+排序,保持时间线连续
+  for (const b of out) b.sceneIds = [...new Set(b.sceneIds)].sort((a, c) => a - c);
+  return out;
+}
+

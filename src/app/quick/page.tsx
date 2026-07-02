@@ -22,7 +22,6 @@ export default function QuickCreate() {
   const [motions, setMotions] = useState<string[]>([DEFAULT_MOTION]);
   const [disclaimer, setDisclaimer] = useState("本视频内容仅供参考，不构成医疗建议");
   const [imageSeconds, setImageSeconds] = useState(4.5);
-  const [castBible, setCastBible] = useState(""); // 留空=自动从文案提取国籍/人物
   const [stopAt, setStopAt] = useState("director"); // 审阅点:director/image/final
   const [busy, setBusy] = useState(false);
 
@@ -49,9 +48,7 @@ export default function QuickCreate() {
         voiceConfig: { provider: "volcengine", voice, speed },
         imageConfig: { style, ratio },
         renderConfig: { motions, disclaimer, imageSeconds },
-        castConfig: castBible.trim()
-          ? { locked: true, cast: [{ id: "main", bible: castBible.trim() }] }
-          : undefined,
+        // 人物/国籍由导演自动从文案提取,不在此手填(如需锁定,在「导演分镜」面板操作)
       };
       const body = {
         ...(mode === "script" ? { script: script.trim() } : { sourceUrl: url.trim() }),
@@ -78,7 +75,7 @@ export default function QuickCreate() {
         <Link href="/" style={{ color: T.accent, fontSize: 13, textDecoration: "none" }}>← 返回任务列表</Link>
       </header>
       <p style={{ color: T.textSoft, fontSize: 13, marginBottom: 20 }}>
-        一次配置好所有选项,创建后后台自动跑到审阅点(或全自动到成片)。人物/国籍留空则自动从文案提取。
+        一次配置好所有选项,创建后后台自动跑到审阅点(或全自动到成片)。<b>人物国籍/场景由导演自动从文案提取</b>,无需手填(如需锁定可在「导演分镜」面板调整)。
       </p>
 
       <div style={cardStyle}>
@@ -106,14 +103,6 @@ export default function QuickCreate() {
           ) : (
             <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="粘贴抖音分享链接…" style={{ ...inp, width: "100%" }} />
           )}
-        </div>
-
-        {/* 人物/国籍 */}
-        <div style={row}>
-          <span style={label}>人物设定(可选)</span>
-          <input value={castBible} onChange={(e) => setCastBible(e.target.value)}
-            placeholder="留空=自动从文案提取国籍/人物(推荐)；填写=强制锁定,如「65岁美国白人男性,银发,休闲衬衫」"
-            style={{ ...inp, width: "100%" }} />
         </div>
 
         {/* 配音 */}
