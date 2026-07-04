@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import type { Timeline } from "@/lib/timeline";
 import { motionPreset, DEFAULT_MOTION } from "@/lib/motions";
 import type { RenderInput, RenderResult } from "./render";
+import { registerActiveWorkDir, unregisterActiveWorkDir, sweepWorkDirs } from "@/lib/cleanup";
 
 /**
  * FFmpeg 原生渲染后端(阶段3)—— 主渲染路径。
@@ -100,10 +101,42 @@ function runFf(args: string[], cwd: string, log: (m: string) => void): Promise<n
   });
 }
 
+/** 探测图片平均亮度 YAVG(0-255);128px 缩略图秒级;失败返回 -1(不影响渲染) */
+function probeYavg(imgAbs: string): Promise<number> {
+  return new Promise((res) => {
+    const ff = process.env.FFMPEG_PATH || "ffmpeg";
+    const child = spawn(ff, ["-hide_banner", "-i", imgAbs, "-vf", "scale=128:-1,signalstats,metadata=print",
+      "-frames:v", "1", "-f", "null", "-"], { shell: process.platform === "win32" });
+    let err = "";
+    child.stderr.on("data", (d) => { err += String(d); });
+    child.on("error", () => res(-1));
+    child.on("close", () => { const m = /YAVG=([\d.]+)/.exec(err); res(m ? parseFloat(m[1]) : -1); });
+  });
+}
+
+/** 据亮度算 gamma(ffmpeg eq 里 gamma>1 才提亮,已实测确认):仅暗于 threshold 才提,使均值→target,上限封顶防过提。返回 1=原样不动 */
+function brightnessGamma(yavg: number, target: number, threshold: number, maxGamma: number): number {
+  if (yavg <= 0 || yavg >= threshold) return 1;            // 探测失败 或 本就够亮 → 不动
+  // ffmpeg eq: out=in^(1/gamma),故 gamma>1 提亮(与标准 gamma 相反)。使 (yavg/255)^(1/gamma)=target/255
+  const g = Math.log(yavg / 255) / Math.log(target / 255);
+  return Math.max(1, Math.min(maxGamma, g));               // 夹到 [1, maxGamma]
+}
+
+/** 并发上限跑一批异步任务(探测用),避免同时 spawn 上百个 ffmpeg */
+async function mapLimit<T, R>(items: T[], limit: number, fn: (x: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let idx = 0;
+  const workers = Array.from({ length: Math.min(Math.max(1, limit), items.length || 1) }, async () => {
+    while (idx < items.length) { const i = idx++; out[i] = await fn(items[i]); }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
 /** 渲染单张图为一段 clip(zoompan+fade+滤镜);缺图用黑场兜底 */
 async function renderClip(
   o: { work: string; srcAbs: string; outName: string; frames: number; W: number; H: number; fps: number;
-       zoomFrom: number; zoomTo: number; fadeIn: number; colorFilter: string; ss: number; x264preset: string },
+       zoomFrom: number; zoomTo: number; fadeIn: number; colorFilter: string; ss: number; clipPreset: string; clipCrf: string; brightFilter: string },
   log: (m: string) => void
 ): Promise<boolean> {
   const frames = Math.max(1, o.frames);
@@ -122,14 +155,15 @@ async function renderClip(
       `scale=${SW}:${SH}:force_original_aspect_ratio=increase,crop=${SW}:${SH},` +
       `zoompan=z='${zexpr}':d=${frames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${SW}x${SH}:fps=${o.fps},` +
       `scale=${o.W}:${o.H}:flags=lanczos,` +
+      (o.brightFilter || "") +
       fade + color + `format=yuv420p`;
     args = ["-y", "-loglevel", "error", "-i", o.srcAbs, "-vf", vf, "-frames:v", String(frames),
-            "-r", String(o.fps), "-c:v", "libx264", "-preset", o.x264preset, "-pix_fmt", "yuv420p", o.outName];
+            "-r", String(o.fps), "-c:v", "libx264", "-preset", o.clipPreset, "-crf", o.clipCrf, "-pix_fmt", "yuv420p", o.outName];
   } else {
     // 缺图 → 黑场兜底,渲染不崩
     log(`缺图,用黑场兜底: ${o.srcAbs}`);
     args = ["-y", "-loglevel", "error", "-f", "lavfi", "-i", `color=c=black:s=${o.W}x${o.H}:r=${o.fps}`,
-            "-frames:v", String(frames), "-c:v", "libx264", "-preset", o.x264preset, "-pix_fmt", "yuv420p", o.outName];
+            "-frames:v", String(frames), "-c:v", "libx264", "-preset", o.clipPreset, "-crf", o.clipCrf, "-pix_fmt", "yuv420p", o.outName];
   }
   const code = await runFf(args, o.work, log);
   return code === 0;
@@ -149,11 +183,21 @@ export async function renderTimelineFfmpeg(input: RenderInput): Promise<RenderRe
   const { width: W, height: H, fps } = timeline;
   const preset = motionPreset(timeline.motion ?? DEFAULT_MOTION);
   const colorFilter = cssFilterToFfmpeg(preset.filter);
-  const ss = Number(process.env.FFRENDER_SUPERSAMPLE ?? "2"); // 消抖超采样倍数(2x zoompan 再降采样)
-  const x264preset = process.env.FFRENDER_X264_PRESET || "medium";
+  const ss = Number(process.env.FFRENDER_SUPERSAMPLE ?? "1.5"); // 消抖超采样倍数;实测1.5x抖动指标≤2x且渲染快约39%,如需回退设 FFRENDER_SUPERSAMPLE=2
+  const x264preset = process.env.FFRENDER_X264_PRESET || "medium"; // 最终(烧字幕)那一遍的编码档——去双重编码后这是唯一一次高质量编码
+  // 去双重编码:clip 段只是中间产物(烧字幕时会整片重编一次),故用极速+近无损档——省 clip 编码时间,且不叠加画质损失
+  const clipPreset = process.env.FFRENDER_CLIP_PRESET || "ultrafast";
+  const clipCrf = process.env.FFRENDER_CLIP_CRF || "15";
+  // 自适应提亮:并行探测每段源图亮度,只对偏暗图(YAVG<阈值)按需提 gamma,好图一律不动、不过曝。可一键关。
+  const autoBright = (process.env.FFRENDER_AUTO_BRIGHTNESS ?? "1") !== "0";
+  const brightTarget = Number(process.env.FFRENDER_BRIGHTNESS_TARGET ?? "105");
+  const brightThreshold = Number(process.env.FFRENDER_BRIGHTNESS_THRESHOLD ?? "100");
+  const brightMaxGamma = Number(process.env.FFRENDER_BRIGHTNESS_MAX_GAMMA ?? "1.8");
 
   const work = join(taskDir, "renders", `ffwork-${Date.now()}`);
   await mkdir(work, { recursive: true });
+  registerActiveWorkDir(work);           // 登记为活动目录 → 清理扫描一律跳过它
+  void sweepWorkDirs().catch(() => {});  // 顺手清历史孤儿废料(非阻塞;已登记的本次目录不受影响)
   try {
     // 打包字体进 work(cwd=work + 相对路径,绕过 Windows 字幕路径转义)
     const fontSrc = join(templateDir(), "assets", "fonts", "simhei.ttf");
@@ -166,6 +210,23 @@ export async function renderTimelineFfmpeg(input: RenderInput): Promise<RenderRe
 
     // 1) 累积帧法:边界帧号取整,帧数=差值(不累积漂移)
     log(`FFmpeg 渲染: ${imgClips.length} 段图 / ${fps}fps / ${W}x${H} / 动效 ${preset.key} / ss=${ss}`);
+
+    // 自适应提亮:并行探测每段源图亮度,只对偏暗图算 gamma(好图不动)。探测失败/关闭则不提。
+    const brightBySrc = new Map<string, string>();
+    if (autoBright) {
+      const uniqSrcs = Array.from(new Set(imgClips.map((c) => c.src)));
+      const yavgs = await mapLimit(uniqSrcs, 8, (s) => {
+        const abs = join(taskDir, s);
+        return existsSync(abs) ? probeYavg(abs) : Promise.resolve(-1);
+      });
+      let lifted = 0;
+      uniqSrcs.forEach((s, i) => {
+        const g = brightnessGamma(yavgs[i], brightTarget, brightThreshold, brightMaxGamma);
+        if (g > 1) { brightBySrc.set(s, `eq=gamma=${g.toFixed(3)},`); lifted++; }
+      });
+      log(`自适应提亮:探测 ${uniqSrcs.length} 图,提亮 ${lifted} 张暗图(target=${brightTarget}/阈值=${brightThreshold})`);
+    }
+
     const clipNames: string[] = [];
     for (let i = 0; i < imgClips.length; i++) {
       const c = imgClips[i];
@@ -176,7 +237,7 @@ export async function renderTimelineFfmpeg(input: RenderInput): Promise<RenderRe
       const ok = await renderClip(
         { work, srcAbs: join(taskDir, c.src), outName, frames, W, H, fps,
           zoomFrom: c.zoom?.from ?? preset.zoom.from, zoomTo: c.zoom?.to ?? preset.zoom.to,
-          fadeIn: preset.fadeIn, colorFilter, ss, x264preset },
+          fadeIn: preset.fadeIn, colorFilter, ss, clipPreset, clipCrf, brightFilter: brightBySrc.get(c.src) ?? "" },
         log
       );
       if (!ok) return { ok: false, error: `第 ${i} 段图渲染失败` };
@@ -230,7 +291,7 @@ export async function renderTimelineFfmpeg(input: RenderInput): Promise<RenderRe
     if (audioFile) burnArgs.push("-i", audioFile);
     burnArgs.push("-vf", `subtitles=sub.ass:fontsdir=.`);
     if (audioFile) burnArgs.push("-map", "0:v", "-map", "1:a", "-shortest");
-    burnArgs.push("-c:v", "libx264", "-preset", x264preset, "-pix_fmt", "yuv420p");
+    burnArgs.push("-c:v", "libx264", "-preset", x264preset, "-crf", process.env.FFRENDER_FINAL_CRF || "20", "-pix_fmt", "yuv420p");
     if (audioFile) burnArgs.push("-c:a", "aac", "-b:a", "128k");
     burnArgs.push("final_out.mp4");
     if ((await runFf(burnArgs, work, log)) !== 0) return { ok: false, error: "烧字幕/混音失败" };
@@ -246,6 +307,7 @@ export async function renderTimelineFfmpeg(input: RenderInput): Promise<RenderRe
     return { ok: true, note: "ffmpeg" };
   } finally {
     await rm(work, { recursive: true, force: true }).catch(() => {});
+    unregisterActiveWorkDir(work); // 先删本次目录(期间仍受保护)再摘登记
   }
 }
 

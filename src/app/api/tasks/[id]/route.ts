@@ -63,15 +63,40 @@ export async function GET(
   });
 }
 
-/** DELETE /api/tasks/[id] — 删除任务：DB 记录(cascade) + 磁盘目录 */
+/** DELETE /api/tasks/[id] — 删除任务:DB 记录(cascade) + 磁盘目录。
+ * 安全护栏:①ID 必须合法 UUID ②运行中/排队中禁删 ③路径白名单(见 cleanup.safeTaskDir)。 */
 export async function DELETE(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  await db.delete(tasks).where(eq(tasks.id, id)); // cascade 删 steps + artifacts
-  const { taskDir } = await import("@/lib/pipeline");
-  const { rm } = await import("node:fs/promises");
-  await rm(taskDir(id), { recursive: true, force: true }).catch(() => {});
-  return NextResponse.json({ ok: true });
+  const { isValidTaskId, deleteTaskFiles } = await import("@/lib/cleanup");
+  if (!isValidTaskId(id)) {
+    return NextResponse.json({ ok: false, error: "非法任务ID,已拒绝" }, { status: 400 });
+  }
+  const task = (await db.select().from(tasks).where(eq(tasks.id, id)))[0];
+  if (!task) return NextResponse.json({ ok: false, error: "task not found" }, { status: 404 });
+
+  // 运行中/排队中/被占用 → 禁删,避免删到正在使用的文件
+  const { isTaskBusy } = await import("@/lib/pipeline");
+  const { queuePosition } = await import("@/lib/renderQueue");
+  if (task.status === "running" || task.status === "queued" || isTaskBusy(id) || queuePosition(id) >= 0) {
+    return NextResponse.json(
+      { ok: false, error: "任务正在运行或排队中,请先暂停或等待完成再删除" },
+      { status: 409 }
+    );
+  }
+
+  // 先删磁盘(路径安全校验;非法/越界会抛错则不动 DB),再删库(cascade steps+artifacts)
+  let freedBytes = 0;
+  try {
+    ({ bytes: freedBytes } = await deleteTaskFiles(id));
+  } catch (e) {
+    return NextResponse.json(
+      { ok: false, error: e instanceof Error ? e.message : "删除文件失败" },
+      { status: 500 }
+    );
+  }
+  await db.delete(tasks).where(eq(tasks.id, id));
+  return NextResponse.json({ ok: true, freedBytes });
 }

@@ -84,6 +84,9 @@ let recovered = false;
 export async function ensureQueueRecovered(): Promise<void> {
   if (recovered) return;
   recovered = true;
+  // 启动时先清历史孤儿工作目录(渲染中断/崩溃后残留的废料);非阻塞、失败不影响启动
+  const { sweepWorkDirs } = await import("./cleanup");
+  void sweepWorkDirs().catch(() => {});
   const rows = await db
     .select({ id: tasks.id })
     .from(tasks)

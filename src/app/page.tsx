@@ -50,11 +50,33 @@ export default function Home() {
 
   async function deleteTask(id: string, e: React.MouseEvent) {
     e.preventDefault(); e.stopPropagation();
-    if (!confirm("确认删除这个任务？操作不可撤销。")) return;
+    if (!confirm("确认删除这个任务？将永久删除它的成品视频、图片等全部文件,操作不可撤销。")) return;
     setActionBusy((b) => ({ ...b, [id]: true }));
-    await fetch(`/api/tasks/${id}`, { method: "DELETE" });
+    const r = await fetch(`/api/tasks/${id}`, { method: "DELETE" }).then((r) => r.json()).catch(() => ({ ok: false, error: "网络错误" }));
+    if (!r.ok) {
+      alert(`删除失败:${r.error ?? "未知错误"}`);
+    } else if (r.freedBytes) {
+      // 静默成功即可,腾出空间在列表刷新后体现
+    }
     await load();
     setActionBusy((b) => ({ ...b, [id]: false }));
+  }
+
+  const [cleaning, setCleaning] = useState(false);
+  async function cleanupJunk() {
+    setCleaning(true);
+    try {
+      const r = await fetch("/api/cleanup", { method: "POST" }).then((r) => r.json()).catch(() => ({ ok: false }));
+      if (r.ok) {
+        const mb = Math.round((r.bytes ?? 0) / 1048576);
+        alert(r.dirs > 0 ? `已清理 ${r.dirs} 个临时目录,腾出约 ${mb} MB` : "没有可清理的临时垃圾");
+      } else {
+        alert("清理失败,请稍后再试");
+      }
+      await load();
+    } finally {
+      setCleaning(false);
+    }
   }
 
   async function create() {
@@ -176,6 +198,17 @@ export default function Home() {
         <span style={{ color: T.textSoft, fontSize: 12 }}>
           {queue.current ? "（串行渲染，完成后自动处理下一条）" : "（在⑧风格运镜确认后自动入队）"}
         </span>
+        <button
+          onClick={cleanupJunk}
+          disabled={cleaning}
+          title="清理渲染中断残留的临时废文件(不影响成品/图片)"
+          style={{
+            marginLeft: "auto", padding: "5px 12px", fontSize: 12, borderRadius: 6, cursor: "pointer",
+            border: `1px solid ${T.border}`, background: T.panel, color: T.textSoft,
+          }}
+        >
+          {cleaning ? "清理中…" : "🧹 清理垃圾"}
+        </button>
       </div>
 
       <h2 style={{ fontSize: 16, color: T.textSoft, marginBottom: 12 }}>
