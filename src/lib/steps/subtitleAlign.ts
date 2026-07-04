@@ -1,30 +1,7 @@
 import type { StepDef } from "./types";
 import { storyboardSchema, voiceSchema } from "@/lib/domain";
 import type { SubtitleCue } from "@/lib/timeline";
-import { readFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
-
-type FilterRule = { from: string; to: string };
-
-/** 从 data/subtitle-filters.json 读用户词库，失败返回空数组 */
-async function loadFilters(): Promise<FilterRule[]> {
-  try {
-    const p = resolve(process.env.DATA_ROOT ?? "./data", "subtitle-filters.json");
-    return JSON.parse(await readFile(p, "utf-8")) as FilterRule[];
-  } catch {
-    return [];
-  }
-}
-
-/** 按词库做替换（长词优先，防短词覆盖长词） */
-function applyFilters(text: string, rules: FilterRule[]): string {
-  let out = text;
-  const sorted = [...rules].sort((a, b) => b.from.length - a.from.length);
-  for (const r of sorted) {
-    if (out.includes(r.from)) out = out.split(r.from).join(r.to);
-  }
-  return out;
-}
+import { loadSubtitleFilters, applySubtitleFilters } from "@/lib/subtitleFilters";
 
 /**
  * subtitleAlign: 生成对齐字幕 cues。
@@ -46,7 +23,7 @@ export const subtitleAlign: StepDef = {
     const board = storyboardSchema.parse(await ctx.readJSON("storyboard.json"));
     const voice = voiceSchema.parse(await ctx.readJSON("voice.json"));
     const sceneText = new Map(board.scenes.map((s) => [s.id, s.text]));
-    const filters = await loadFilters(); // 用户词库，始终应用
+    const filters = await loadSubtitleFilters(); // 用户词库，始终应用
 
     const cues: SubtitleCue[] = [];
     let cursor = 0;
@@ -59,7 +36,7 @@ export const subtitleAlign: StepDef = {
         const dur = i === chunks.length - 1
           ? cursor + seg.duration - local
           : (chunk.length / totalChars) * seg.duration;
-        const display = filters.length ? applyFilters(chunk, filters) : chunk;
+        const display = filters.length ? applySubtitleFilters(chunk, filters) : chunk;
         cues.push({ start: local, end: local + dur, text: display });
         local += dur;
       });

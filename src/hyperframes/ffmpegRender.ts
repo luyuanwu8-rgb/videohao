@@ -7,6 +7,7 @@ import type { Timeline } from "@/lib/timeline";
 import { motionPreset, DEFAULT_MOTION } from "@/lib/motions";
 import type { RenderInput, RenderResult } from "./render";
 import { registerActiveWorkDir, unregisterActiveWorkDir, sweepWorkDirs } from "@/lib/cleanup";
+import { loadSubtitleFilters, applySubtitleFilters } from "@/lib/subtitleFilters";
 
 /**
  * FFmpeg 原生渲染后端(阶段3)—— 主渲染路径。
@@ -281,9 +282,11 @@ export async function renderTimelineFfmpeg(input: RenderInput): Promise<RenderRe
     }
     const audioFile = existsSync(join(work, "audio.m4a")) ? "audio.m4a" : existsSync(join(work, "voice.m4a")) ? "voice.m4a" : null;
 
-    // 4) 生成 ass(字幕 cue + 标题/声明文字叠加)
+    // 4) 生成 ass(字幕 cue + 标题/声明文字叠加)。渲染时再应用一次违规词库 → 加词后只重渲即生效。
     const assPath = join(work, "sub.ass");
-    await writeFile(assPath, buildAss(timeline, W, H), "utf-8");
+    const subFilters = await loadSubtitleFilters();
+    if (subFilters.length) log(`字幕渲染:应用 ${subFilters.length} 条违规词库替换`);
+    await writeFile(assPath, buildAss(timeline, W, H, subFilters), "utf-8");
 
     // 5) 烧字幕 + 混音 → 临时输出,再原子 rename 到 outPath
     const tmpOut = join(work, "final_out.mp4");
@@ -311,8 +314,9 @@ export async function renderTimelineFfmpeg(input: RenderInput): Promise<RenderRe
   }
 }
 
-/** 由 timeline 生成 ass:字幕(底部黄字) + 标题(顶部) + 声明(底部小字) */
-function buildAss(timeline: Timeline, W: number, H: number): string {
+/** 由 timeline 生成 ass:字幕(底部黄字) + 标题(顶部) + 声明(底部小字)。
+ *  subFilters:字幕违规词库,渲染时对字幕 cue 再应用一次——这样加词后只重渲即可过滤,无需重跑字幕步骤。 */
+function buildAss(timeline: Timeline, W: number, H: number, subFilters: import("@/lib/subtitleFilters").FilterRule[] = []): string {
   const sub = timeline.tracks.find((t) => t.type === "subtitle") as
     | Extract<Timeline["tracks"][number], { type: "subtitle" }>
     | undefined;
@@ -331,7 +335,8 @@ function buildAss(timeline: Timeline, W: number, H: number): string {
   if (sub) {
     for (const cue of sub.cues) {
       const end = Math.max(cue.start + 0.1, cue.end);
-      events.push(`Dialogue: 0,${assTime(cue.start)},${assTime(end)},Sub,,0,0,0,,${assText(cue.text)}`);
+      const txt = subFilters.length ? applySubtitleFilters(cue.text, subFilters) : cue.text;
+      events.push(`Dialogue: 0,${assTime(cue.start)},${assTime(end)},Sub,,0,0,0,,${assText(txt)}`);
     }
   }
   for (const t of timeline.tracks) {

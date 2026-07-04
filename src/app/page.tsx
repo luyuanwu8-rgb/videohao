@@ -16,6 +16,14 @@ type Task = {
 
 type QueueSnapshot = { current: string | null; waiting: string[] };
 
+/** createdAt(秒级时间戳)→ "YYYY-MM-DD HH:mm" */
+function fmtTime(sec: number): string {
+  if (!sec) return "";
+  const d = new Date(sec * 1000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 export default function Home() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [queue, setQueue] = useState<QueueSnapshot>({ current: null, waiting: [] });
@@ -235,7 +243,7 @@ export default function Home() {
                 </span>
               </div>
               <div style={{ fontSize: 12, color: T.textFaint, marginTop: 5 }}>
-                {t.track} · {t.sourceUrl}
+                🕐 {fmtTime(t.createdAt)} · {t.track}{t.sourceUrl ? ` · ${t.sourceUrl}` : ""}
               </div>
               {t.error && (
                 <div style={{ fontSize: 12, color: T.failed, marginTop: 4 }}>{t.error}</div>
