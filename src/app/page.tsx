@@ -34,6 +34,21 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   const [actionBusy, setActionBusy] = useState<Record<string, boolean>>({});
 
+  // 记住上次选的模式/赛道(下次进来自动带出),链接/文案内容除外
+  const [prefsLoaded, setPrefsLoaded] = useState(false);
+  useEffect(() => {
+    try {
+      const s = JSON.parse(localStorage.getItem("videohao.home.prefs.v1") || "{}");
+      if (s.mode === "link" || s.mode === "script") setMode(s.mode);
+      if (typeof s.track === "string") setTrack(s.track);
+    } catch { /* 忽略损坏本地数据 */ }
+    setPrefsLoaded(true);
+  }, []);
+  useEffect(() => {
+    if (!prefsLoaded) return;
+    try { localStorage.setItem("videohao.home.prefs.v1", JSON.stringify({ mode, track })); } catch { /* 忽略 */ }
+  }, [prefsLoaded, mode, track]);
+
   async function load() {
     const r = await fetch("/api/tasks").then((r) => r.json());
     if (r.ok) {

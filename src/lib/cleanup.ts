@@ -93,6 +93,7 @@ export async function sweepWorkDirs(opts: { minAgeMs?: number } = {}): Promise<{
 export async function deleteTaskFiles(id: string): Promise<{ bytes: number }> {
   const dir = safeTaskDir(id); // 非法ID/越界会抛错,从根杜绝误删
   const bytes = existsSync(dir) ? await dirSize(dir) : 0;
-  await rm(dir, { recursive: true, force: true });
+  // maxRetries/retryDelay:应对 Windows 上刚释放的文件句柄(如视频预览)造成的瞬时 EPERM/EBUSY
+  await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
   return { bytes };
 }

@@ -77,24 +77,31 @@ export async function DELETE(
   const task = (await db.select().from(tasks).where(eq(tasks.id, id)))[0];
   if (!task) return NextResponse.json({ ok: false, error: "task not found" }, { status: 404 });
 
-  // 运行中/排队中/被占用 → 禁删,避免删到正在使用的文件
+  // 仅当任务"真正在跑"(本进程内存锁/队列)才禁删;不依赖可能过期的 DB 状态(避免僵尸状态永远删不掉)
   const { isTaskBusy } = await import("@/lib/pipeline");
   const { queuePosition } = await import("@/lib/renderQueue");
-  if (task.status === "running" || task.status === "queued" || isTaskBusy(id) || queuePosition(id) >= 0) {
+  if (isTaskBusy(id) || queuePosition(id) >= 0) {
     return NextResponse.json(
       { ok: false, error: "任务正在运行或排队中,请先暂停或等待完成再删除" },
       { status: 409 }
     );
   }
 
-  // 先删磁盘(路径安全校验;非法/越界会抛错则不动 DB),再删库(cascade steps+artifacts)
+  // 先删磁盘(路径安全校验;非法/越界会抛错则不动 DB)。文件被占用(如视频正在预览)给出友好提示,可关闭后重试
   let freedBytes = 0;
   try {
     ({ bytes: freedBytes } = await deleteTaskFiles(id));
   } catch (e) {
+    const code = (e as { code?: string })?.code ?? "";
+    const locked = ["EPERM", "EBUSY", "EACCES", "ENOTEMPTY"].includes(code);
     return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : "删除文件失败" },
-      { status: 500 }
+      {
+        ok: false,
+        error: locked
+          ? "该任务的视频文件正被占用(可能正在预览播放),请关闭视频预览后重试"
+          : `删除文件失败: ${e instanceof Error ? e.message : String(e)}`,
+      },
+      { status: locked ? 409 : 500 }
     );
   }
   await db.delete(tasks).where(eq(tasks.id, id));

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { T, btn, cardStyle } from "../ui/theme";
@@ -24,6 +24,32 @@ export default function QuickCreate() {
   const [imageSeconds, setImageSeconds] = useState(4.5);
   const [stopAt, setStopAt] = useState("director"); // 审阅点:director/image/final
   const [busy, setBusy] = useState(false);
+
+  // 记住上次的配置选择(文案/链接除外,那是每次要新填的内容)。localStorage 仅客户端可用,故放 effect 里。
+  const PREFS_KEY = "videohao.quick.prefs.v1";
+  const [prefsLoaded, setPrefsLoaded] = useState(false);
+  useEffect(() => {
+    try {
+      const s = JSON.parse(localStorage.getItem(PREFS_KEY) || "{}");
+      if (s.mode === "link" || s.mode === "script") setMode(s.mode);
+      if (typeof s.track === "string") setTrack(s.track);
+      if (typeof s.voice === "string") setVoice(s.voice);
+      if (typeof s.speed === "number") setSpeed(s.speed);
+      if (typeof s.style === "string") setStyle(s.style);
+      if (typeof s.ratio === "string") setRatio(s.ratio);
+      if (Array.isArray(s.motions) && s.motions.length) setMotions(s.motions);
+      if (typeof s.disclaimer === "string") setDisclaimer(s.disclaimer);
+      if (typeof s.imageSeconds === "number") setImageSeconds(s.imageSeconds);
+      if (typeof s.stopAt === "string") setStopAt(s.stopAt);
+    } catch { /* 忽略损坏的本地数据 */ }
+    setPrefsLoaded(true);
+  }, []);
+  useEffect(() => {
+    if (!prefsLoaded) return; // 恢复完成后才保存,避免用默认值覆盖已存偏好
+    try {
+      localStorage.setItem(PREFS_KEY, JSON.stringify({ mode, track, voice, speed, style, ratio, motions, disclaimer, imageSeconds, stopAt }));
+    } catch { /* 隐私模式等写入失败,忽略 */ }
+  }, [prefsLoaded, mode, track, voice, speed, style, ratio, motions, disclaimer, imageSeconds, stopAt]);
 
   const inp: React.CSSProperties = {
     padding: "9px 12px", background: T.panel, border: `1px solid ${T.border}`,
