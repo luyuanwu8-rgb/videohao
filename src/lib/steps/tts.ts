@@ -3,8 +3,9 @@ import { mkdir } from "node:fs/promises";
 import type { StepDef } from "./types";
 import { synthesize, synthesizeSilence, CensorshipError, estimateDuration } from "@/lib/providers/stepfun";
 import { synthesizeVolc } from "@/lib/providers/volcengine";
+import { synthesizeAura } from "@/lib/providers/aurastd";
 import { chat } from "@/lib/providers/llm";
-import { storyboardSchema, voiceSchema, voiceConfigSchema, type VoiceSegment } from "@/lib/domain";
+import { storyboardSchema, voiceSchema, voiceConfigSchema, type VoiceSegment, type VoiceConfig } from "@/lib/domain";
 
 /**
  * tts: 每个 scene 一段配音，记录真实时长。
@@ -19,10 +20,20 @@ async function synth(
   text: string,
   dest: string,
   mode: "mock" | "real",
-  cfg: { provider: string; voice: string; speed: number }
+  cfg: VoiceConfig
 ): Promise<{ duration: number }> {
   if (cfg.provider === "stepfun") {
     return synthesize(text, dest, mode, { voice: cfg.voice, speed: cfg.speed });
+  }
+  if (cfg.provider === "aurastd") {
+    return synthesizeAura(text, dest, mode, {
+      voice: cfg.voice,
+      speed: cfg.speed,
+      vol: cfg.vol,
+      pitch: cfg.pitch,
+      emotion: cfg.emotion,
+      voiceModify: cfg.voiceModify,
+    });
   }
   return synthesizeVolc(text, dest, mode, { voice: cfg.voice, speed: cfg.speed });
 }

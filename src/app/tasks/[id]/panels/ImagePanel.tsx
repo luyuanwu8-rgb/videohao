@@ -61,6 +61,24 @@ export function ImagePanel({ taskId, detail, reload, navigate }: PanelProps) {
     setBusy(false);
   }
 
+  // 补齐缺图:重跑 imageGenerate 步骤。因签名复用,已生成的图跳过,只补缺的那几张(幂等、不从头跑)。
+  async function fillMissing() {
+    setBusy(true);
+    try {
+      const r = await fetch(`/api/tasks/${taskId}/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ step: "imageGenerate" }),
+      }).then((r) => r.json());
+      if (!r.ok) alert(r.error || "补齐缺图失败,请重试");
+    } catch {
+      alert("补齐缺图请求失败,请检查网络后重试");
+    } finally {
+      reload();
+      setBusy(false);
+    }
+  }
+
   // 手动重排：交换两张图的图片文件(imagePath)，但各自覆盖的句子(sceneIds)留在原位置不变。
   // 即"换图不换时段"——纠正九宫格模型偶发的放错格。写回 images.json(软保存,不重跑)。
   function swapImage(i: number, j: number) {
@@ -143,7 +161,36 @@ export function ImagePanel({ taskId, detail, reload, navigate }: PanelProps) {
 
       {/* 生图结果 */}
       {status === "running" ? (
-        <StepLoader step={step} label="生成场景图" />
+        <div>
+          <StepLoader step={step} label="生成场景图" />
+          {detail.progress?.imageGen && (() => {
+            const p = detail.progress.imageGen;
+            const pct = p.total ? Math.round((p.done / p.total) * 100) : 0;
+            return (
+              <div style={{ marginTop: 12, maxWidth: 340 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: T.text, marginBottom: 6 }}>
+                  <span>🖼️ 已生成 {p.done} / {p.total} 张</span><span>{pct}%</span>
+                </div>
+                <div style={{ height: 8, background: T.border, borderRadius: 6, overflow: "hidden" }}>
+                  <div style={{ width: `${pct}%`, height: "100%", background: T.accent, transition: "width .4s" }} />
+                </div>
+                <div style={{ fontSize: 11, color: T.textFaint, marginTop: 4 }}>每 9 张一组出图,进度会分组跳动(真实已出图数)</div>
+              </div>
+            );
+          })()}
+        </div>
+      ) : status === "failed" ? (
+        // 生图部分失败(缺图):明确红字提示 + 一键补齐(只补缺的,已生成的不重画)
+        <div style={{ border: `1px solid ${T.failed}`, borderRadius: 10, padding: "14px 16px", background: T.panelAlt }}>
+          <div style={{ color: T.failed, fontWeight: 600, fontSize: 14, marginBottom: 6 }}>⚠️ 生图未全部完成</div>
+          <div style={{ fontSize: 13, color: T.text, marginBottom: 10, lineHeight: 1.6 }}>
+            {step?.error || "部分场景图生成失败(多为网络/接口超时)。"}
+            <br />点下方按钮重试:<b>已生成的图会保留</b>,只补缺失的那几张。
+          </div>
+          <button onClick={fillMissing} disabled={busy} style={btn("primary")}>
+            {busy ? "补齐中…" : "🔄 补齐缺图(只补缺的)"}
+          </button>
+        </div>
       ) : !d ? (
         <p style={{ color: T.textSoft }}>选好风格后点「生成场景图」。</p>
       ) : (

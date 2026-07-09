@@ -1,6 +1,7 @@
 import type { StepDef } from "./types";
 import { timelineSchema } from "@/lib/timeline";
 import { renderTimeline } from "@/hyperframes/render";
+import { validateRenderedVideo } from "@/hyperframes/validate";
 import { motionPreset } from "@/lib/motions";
 
 /**
@@ -57,7 +58,15 @@ export const render: StepDef = {
         try {
           if (existsSync(finalPath)) await rm(finalPath, { force: true });
         } catch { /* 占用则跳过删，copy 覆盖 */ }
-        await copyFile(srcPath, finalPath).catch(() => {});
+        try {
+          await copyFile(srcPath, finalPath);
+        } catch (e) {
+          return { ok: false, error: `复制 ${outRel} 到 final.mp4 失败: ${e instanceof Error ? e.message : e}` };
+        }
+        if (ctx.mode !== "mock") {
+          const finalCheck = await validateRenderedVideo({ filePath: finalPath, timeline, log: ctx.log });
+          if (!finalCheck.ok) return { ok: false, error: `final.mp4 验收失败: ${finalCheck.error}` };
+        }
         await ctx.registerArtifact("final.mp4", { fileType: "mp4" });
       }
       ctx.log(`成片 ${i + 1}/${motions.length}: ${outRel} (${preset.label})`);

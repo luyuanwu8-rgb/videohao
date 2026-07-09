@@ -18,6 +18,7 @@ const PROVIDER_LABEL: Record<string, string> = {
   llm: "LLM（改写/分析/分镜）",
   stepfun: "StepFun（ASR + TTS）",
   volcengine: "火山引擎（TTS）",
+  aurastd: "Aura Studio（MiniMax 复刻 TTS）",
   gptimage: "gpt-image（生图）",
   tikhub: "TikHub（抖音解析）",
   global: "全局开关",

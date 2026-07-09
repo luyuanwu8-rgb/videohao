@@ -159,13 +159,16 @@ export default function QuickCreate() {
               {["9:16", "3:4", "1:1", "4:3", "16:9"].map((r) => <option key={r} value={r}>{r}</option>)}
             </select>
           </div>
-          <div style={{ width: 150 }}>
-            <span style={label}>画面节奏 {imageSeconds}s/张</span>
+          <div style={{ width: 170 }}>
+            <span style={label}>画面密度</span>
             <select value={imageSeconds} onChange={(e) => setImageSeconds(+e.target.value)} style={{ ...inp, width: "100%" }}>
-              <option value={3}>紧凑 ~3s(图多)</option>
-              <option value={4.5}>标准 ~4.5s</option>
-              <option value={6.5}>舒缓 ~6.5s(省)</option>
+              <option value={3}>偏密(更多图)</option>
+              <option value={4.5}>标准(约25字/图)</option>
+              <option value={6.5}>省图(更少图)</option>
             </select>
+            <div style={{ color: T.textFaint, fontSize: 11, marginTop: 5, lineHeight: 1.4 }}>
+              按文案长度预算，长文案通常 30–50 张
+            </div>
           </div>
         </div>
 

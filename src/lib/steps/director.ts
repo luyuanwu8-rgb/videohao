@@ -11,7 +11,7 @@ import { estimateDuration } from "@/lib/providers/stepfun";
  * 阶段4 强化:
  * - 提取优先:从文案(名字/地名/文化线索)判定 setting,cast 与所有 composition 都据此,根治"美国人配中国背景"。
  * - 四层匹配:优先直译文案比喻 → 造贴切隐喻 → 人物/情绪/行为/后果 → 一切符合 setting;健康赛道只禁临床物件不禁话题。
- * - 密度(路线C):按文案字数估时算目标图数,长句拆多拍(sceneIds 共享句号、不同画面时刻),校验偏少则重试增密。
+ * - 密度(路线C):按有效口播字数预算目标图数,按语义组织画面;连续同事件可多句共用一图,超量则重试/合并收敛。
  *
  * 产物 director.json。
  */
@@ -24,17 +24,21 @@ export const director: StepDef = {
     const rw = rewriteSchema.parse(await ctx.readJSON("rewrite.json"));
     const sceneIds = board.scenes.map((s) => s.id);
 
-    // 画面密度目标:按文案字数估时(不用不可靠的 estDuration),每张图约 targetSec 秒
-    // targetSec 优先取配置中心写入的 render-config.imageSeconds,否则 env,否则 4.5
+    // 画面密度目标:按有效口播字数预算,标准密度约 25 字/图;render-config.imageSeconds 仅作为旧配置的密度旋钮兼容。
     const totalEst = board.scenes.reduce((sum, s) => sum + estimateDuration(s.text), 0);
-    let targetSec = Number(process.env.DIRECTOR_TARGET_SEC ?? "4.5");
+    let densitySeconds = Number(process.env.DIRECTOR_TARGET_SEC ?? "4.5");
     try {
       const rc = await ctx.readJSON<{ imageSeconds?: number }>("render-config.json");
-      if (rc?.imageSeconds && rc.imageSeconds > 0) targetSec = Number(rc.imageSeconds);
+      if (rc?.imageSeconds && rc.imageSeconds > 0) densitySeconds = Number(rc.imageSeconds);
     } catch {
       /* 无 render-config 走默认 */
     }
-    const targetBeats = Math.max(1, Math.round(totalEst / targetSec));
+    const effectiveChars = countEffectiveChars(rw.script || board.scenes.map((s) => s.text).join(""));
+    const budget = planBeatBudget(effectiveChars, densitySeconds);
+    const targetBeats = budget.target;
+    const maxBeats = budget.max;
+    const minBeats = budget.min;
+    const targetSec = Math.max(3, totalEst / Math.max(1, targetBeats));
 
     // 读用户锁定的人物(单任务级)。locked 时导演必须用这些角色,不得自创。
     let lockedCast: { id: string; bible: string }[] | null = null;
@@ -47,10 +51,10 @@ export const director: StepDef = {
 
     let plan: Director;
     if (ctx.mode === "mock") {
-      // mock:按目标秒数分组(每组累计估时~targetSec 即开新拍),setting 留空,中性 cast
+      // mock:按预算把相邻句合并成拍,setting 留空,中性 cast
       const beats: Director["beats"] = [];
       let cur: typeof board.scenes = [];
-      let curDur = 0;
+      const scenesPerBeat = Math.max(1, Math.ceil(board.scenes.length / targetBeats));
       const flush = () => {
         if (!cur.length) return;
         beats.push({
@@ -62,12 +66,10 @@ export const director: StepDef = {
           composition: cur[0].visual || "生活场景",
         });
         cur = [];
-        curDur = 0;
       };
       for (const s of board.scenes) {
         cur.push(s);
-        curDur += estimateDuration(s.text);
-        if (curDur >= targetSec) flush();
+        if (cur.length >= scenesPerBeat && beats.length < targetBeats - 1) flush();
       }
       flush();
       plan = {
@@ -118,20 +120,25 @@ export const director: StepDef = {
       let parsed: Director | null = null;
       let lastErr: unknown;
       let feedback = "";
-      const minBeats = Math.max(1, Math.floor(targetBeats * 0.6));
       for (let attempt = 0; attempt < 3; attempt++) {
         const userMsg =
-          prompt.build({ script: rw.script, sourceBook: rw.sourceBook, sceneList, lockedCast: lockedCastText, targetBeats, targetSec, worldview }) +
+          prompt.build({ script: rw.script, sourceBook: rw.sourceBook, sceneList, lockedCast: lockedCastText, targetBeats, targetSec, maxBeats, effectiveChars, worldview }) +
           feedback;
         const { content, cost } = await chat(prompt.system, userMsg, ctx.mode, { json: true });
         ctx.reportCost(cost, { provider: "llm", step: "director" });
         try {
           const p = directorSchema.parse(await parseJsonRobust(content, ctx.mode));
-          // 密度校验:偏少则带反馈重试增密(保留本次作兜底)
+          // 密度校验:偏少则带反馈重试增密;超量则先让模型按语义压缩。
           if (p.beats.length < minBeats && attempt < 2) {
             parsed = p;
-            feedback = `\n\n【上次只给了 ${p.beats.length} 拍,偏少。目标约 ${targetBeats} 拍。请把长句拆成多拍(多拍 sceneIds 共享同一句号、给不同的画面时刻),让成片画面更丰富,不要多句长时间共用一张图。】`;
+            feedback = `\n\n【上次只给了 ${p.beats.length} 拍,偏少。目标约 ${targetBeats} 拍。请只在人物/地点/时间/事件/情绪明显变化处加拍,开头钩子可稍快,不要机械凑数。】`;
             ctx.log(`导演画面数偏少(${p.beats.length}/${targetBeats}),重试要求增密…`);
+            continue;
+          }
+          if (p.beats.length > maxBeats && attempt < 2) {
+            parsed = p;
+            feedback = `\n\n【上次给了 ${p.beats.length} 拍,超出上限 ${maxBeats} 拍。请按语义合并:同一人物/地点/事件连续2-4句共用一张图;重复解释、购买引导、关注话术、泛泛收尾并入相邻内容画面。禁止一句一图,禁止为长句硬拆多拍。】`;
+            ctx.log(`导演画面数超量(${p.beats.length}/${maxBeats}),重试要求压缩…`);
             continue;
           }
           parsed = p;
@@ -159,6 +166,12 @@ export const director: StepDef = {
       } catch (e) {
         ctx.log(`话术句分类跳过: ${e instanceof Error ? e.message : e}`);
       }
+
+      if (plan.beats.length > maxBeats) {
+        const before = plan.beats.length;
+        plan.beats = limitBeatCount(plan.beats, maxBeats);
+        ctx.log(`导演画面数硬收敛: ${before}→${plan.beats.length} 拍(上限 ${maxBeats})`);
+      }
     }
 
     // 兜底校验:确保每个 sceneId 都被某拍覆盖(允许被多拍共享),漏的并入末拍
@@ -168,11 +181,12 @@ export const director: StepDef = {
       plan.beats[plan.beats.length - 1].sceneIds.push(...missing);
       ctx.log(`补漏：${missing.length} 个句子并入末拍`);
     }
+    normalizeBeats(plan.beats);
 
     await ctx.writeJSON("director.json", plan);
     const s = plan.setting;
     ctx.log(
-      `导演方案: ${plan.beats.length} 拍(目标~${targetBeats}) / ${sceneIds.length} 句 · 角色 ${plan.cast.length} · ` +
+      `导演方案: ${plan.beats.length} 拍(目标~${targetBeats},上限${maxBeats},有效字${effectiveChars}) / ${sceneIds.length} 句 · 角色 ${plan.cast.length} · ` +
         `世界观[${[s.region, s.era, s.ethnicity, s.locale].filter(Boolean).join("/") || "默认"}]`
     );
     return { ok: true };
@@ -204,19 +218,86 @@ async function classifyCtaScenes(
   }
 }
 
-/** 确定性归并:凡"整拍只含话术句"的拍,并入相邻内容拍(优先前一拍,首拍则并入后一拍),
- * 保证套话句绝不单独占一张图。sceneId 全保留、排序、不丢弃。含内容句的混合拍不动。 */
+function countEffectiveChars(text: string): number {
+  return text.replace(/\s/g, "").length;
+}
+
+function planBeatBudget(effectiveChars: number, densitySeconds: number): { target: number; min: number; max: number } {
+  const base = Math.max(1, Math.round(effectiveChars / 25));
+  // 兼容旧“几秒/张”配置:4.5=标准;数值越小越密,越大越省。
+  const densityFactor = Number.isFinite(densitySeconds) && densitySeconds > 0 ? 4.5 / densitySeconds : 1;
+  const softMin = effectiveChars < 180 ? 3 : effectiveChars < 300 ? 6 : 8;
+  const target = clamp(Math.round(base * densityFactor), softMin, 50);
+  const min = Math.max(1, Math.floor(target * (target >= 30 ? 0.6 : 0.5)));
+  const max = Math.min(50, Math.max(target + 5, Math.ceil(target * 1.25)));
+  return { target, min, max };
+}
+
+function clamp(n: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, n));
+}
+
+function normalizeBeats(beats: Director["beats"]): void {
+  for (let i = 0; i < beats.length; i++) {
+    beats[i].id = i + 1;
+    beats[i].sceneIds = [...new Set(beats[i].sceneIds)].sort((a, b) => a - b);
+  }
+}
+
+function limitBeatCount(beats: Director["beats"], maxBeats: number): Director["beats"] {
+  const out = beats.map((b) => ({ ...b, sceneIds: [...b.sceneIds] }));
+  while (out.length > maxBeats && out.length > 1) {
+    let best = 0;
+    let bestScore = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < out.length - 1; i++) {
+      const uniqueScenes = new Set([...out[i].sceneIds, ...out[i + 1].sceneIds]).size;
+      const score = uniqueScenes * 10 + Math.abs((out[i].composition || "").length - (out[i + 1].composition || "").length) / 100;
+      if (score < bestScore) {
+        best = i;
+        bestScore = score;
+      }
+    }
+    const a = out[best];
+    const b = out[best + 1];
+    out[best] = {
+      ...a,
+      sceneIds: [...new Set([...a.sceneIds, ...b.sceneIds])].sort((x, y) => x - y),
+      mood: a.mood || b.mood,
+      composition: mergeComposition(a.composition, b.composition),
+    };
+    out.splice(best + 1, 1);
+  }
+  normalizeBeats(out);
+  return out;
+}
+
+function mergeComposition(a: string, b: string): string {
+  const left = (a || "").trim();
+  const right = (b || "").trim();
+  if (!left) return right;
+  if (!right || left === right) return left;
+  const merged = `${left}；同一画面延续到${right}`;
+  return merged.length > 260 ? left : merged;
+}
+
+/** 确定性归并:凡"整拍只含话术句"的拍,并入相邻内容拍(优先前一拍),避免套话单独占图。
+ * 关键上限:单拍最多覆盖 MAX_SCENES_PER_BEAT 个场景 —— 防止片尾长串话术全压成一张长时间静止图
+ * (曾出现一张书封顶 72 秒、严重音画脱节)。超上限的话术拍保留为独立拍,靠其自身中性画面撑住。
+ * sceneId 全保留、排序、不丢弃。含内容句的混合拍不动。 */
 function mergeCtaBeats<T extends { id: number; sceneIds: number[] }>(beats: T[], ctaIds: Set<number>): T[] {
+  const MAX_SCENES_PER_BEAT = 2; // 一拍(含自身场景)最多覆盖2个场景,满了不再吸收话术拍
   const isCtaOnly = (b: T) => b.sceneIds.length > 0 && b.sceneIds.every((id) => ctaIds.has(id));
   const out: T[] = [];
   const pending: number[] = []; // 首部连续话术句,暂存待并入后续首个内容拍
   for (const b of beats) {
     if (isCtaOnly(b)) {
-      if (out.length > 0) {
-        // 并入前一个已保留的拍(沿用其画面)
-        out[out.length - 1].sceneIds.push(...b.sceneIds);
+      const target = out[out.length - 1];
+      if (target && target.sceneIds.length < MAX_SCENES_PER_BEAT) {
+        target.sceneIds.push(...b.sceneIds); // 未满 → 并入前拍,沿用其画面
+      } else if (out.length > 0) {
+        out.push(b); // 前拍已满 → 该话术拍保留为独立一拍,避免一张图顶太久
       } else {
-        pending.push(...b.sceneIds); // 还没有内容拍,暂存
+        pending.push(...b.sceneIds); // 还没有任何拍,暂存
       }
     } else {
       if (pending.length) { b.sceneIds.unshift(...pending); pending.length = 0; }
@@ -232,4 +313,3 @@ function mergeCtaBeats<T extends { id: number; sceneIds: number[] }>(beats: T[],
   for (const b of out) b.sceneIds = [...new Set(b.sceneIds)].sort((a, c) => a - c);
   return out;
 }
-

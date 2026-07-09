@@ -37,6 +37,11 @@ export const API_CONFIG_DEFS: ApiConfigDef[] = [
   { provider: "volcengine", key: "VOLC_TTS_CLUSTER", description: "火山集群(默认 volcano_tts)", isSecret: false },
   { provider: "volcengine", key: "VOLC_TTS_VOICE", description: "火山默认音色", isSecret: false },
 
+  // Aura Studio(MiniMax 转发 TTS,含复刻音色)
+  { provider: "aurastd", key: "AURA_TTS_API_KEY", description: "Aura Studio API 密钥", isSecret: true },
+  { provider: "aurastd", key: "AURA_TTS_MODEL", description: "模型(默认 speech-2.8-turbo)", isSecret: false },
+  { provider: "aurastd", key: "AURA_TTS_URL", description: "接口地址(默认官方 /api/v1/tts)", isSecret: false },
+
   // gpt-image(生图)
   { provider: "gptimage", key: "GPTIMAGE_BASE_URL", description: "生图接口域名", isSecret: false },
   { provider: "gptimage", key: "GPTIMAGE_API_KEY", description: "生图 API 密钥", isSecret: true },

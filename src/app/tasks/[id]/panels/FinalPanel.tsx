@@ -101,11 +101,40 @@ export function FinalPanel({ taskId, detail, reload }: PanelProps) {
             <div
               style={{
                 width: 300, height: 533, borderRadius: 14, background: "#000",
-                border: `1px solid ${T.border}`, display: "flex",
-                alignItems: "center", justifyContent: "center", color: T.textFaint, fontSize: 13,
+                border: `1px solid ${T.border}`, display: "flex", flexDirection: "column",
+                alignItems: "center", justifyContent: "center", gap: 14, padding: 24,
+                color: T.textFaint, fontSize: 13, textAlign: "center",
               }}
             >
-              {status === "failed" ? "渲染失败，点「重新合成」" : "渲染中…"}
+              {status === "failed" ? (
+                "渲染失败，点「重新合成」"
+              ) : (() => {
+                const p = detail.progress?.render;
+                if (!p) return <span>渲染中…</span>;
+                const inClips = p.done < p.total;
+                const pct = p.total ? Math.round((p.done / p.total) * 100) : 0;
+                return (
+                  <>
+                    <div style={{ fontSize: 28 }}>🎬</div>
+                    <div style={{ color: T.text, fontWeight: 600, fontSize: 14 }}>
+                      {inClips ? "分段渲染中" : "合成中 · 最后一步"}
+                    </div>
+                    {inClips ? (
+                      <>
+                        <div style={{ color: T.text, fontSize: 16 }}>{p.done} / {p.total} 段</div>
+                        <div style={{ width: 220, height: 8, background: T.border, borderRadius: 6, overflow: "hidden" }}>
+                          <div style={{ width: `${pct}%`, height: "100%", background: T.accent, transition: "width .4s" }} />
+                        </div>
+                        <div style={{ fontSize: 12 }}>{pct}%</div>
+                      </>
+                    ) : (
+                      <div style={{ fontSize: 12, lineHeight: 1.7 }}>
+                        整片烧字幕重编中<br />这一步是单次长编码、无法细分<br />请耐心等待…
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
             </div>
           ) : (
             <>

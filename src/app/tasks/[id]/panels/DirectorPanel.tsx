@@ -194,7 +194,7 @@ export function DirectorPanel({ taskId, detail, reload, navigate }: PanelProps) 
 
           {/* 逐拍画面 */}
           <div>
-            <label style={label}>画面节拍（{d.beats.length} 拍 → 出 {d.beats.length} 张图，每拍覆盖若干句）</label>
+            <label style={label}>画面节拍（{d.beats.length} 拍 → 出 {d.beats.length} 张图；按文案长度预算，可多句共用一图）</label>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {d.beats.map((b, i) => (
                 <div key={b.id} style={{ background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 10, padding: 12, display: "flex", gap: 12 }}>

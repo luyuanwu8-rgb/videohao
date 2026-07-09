@@ -1,13 +1,15 @@
-import { join, dirname, resolve } from "node:path";
-import { writeFile, mkdir, copyFile, rm, rename, readFile } from "node:fs/promises";
+import { join, dirname, resolve, basename, sep } from "node:path";
+import { writeFile, mkdir, copyFile, rm, rename, readFile, statfs } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { freemem } from "node:os";
 import type { Timeline } from "@/lib/timeline";
 import { motionPreset, DEFAULT_MOTION } from "@/lib/motions";
 import type { RenderInput, RenderResult } from "./render";
 import { registerActiveWorkDir, unregisterActiveWorkDir, sweepWorkDirs } from "@/lib/cleanup";
 import { loadSubtitleFilters, applySubtitleFilters } from "@/lib/subtitleFilters";
+import { validateRenderedVideo } from "./validate";
 
 /**
  * FFmpeg 原生渲染后端(阶段3)—— 主渲染路径。
@@ -115,6 +117,29 @@ function probeYavg(imgAbs: string): Promise<number> {
   });
 }
 
+function ffconcatLine(absPath: string): string {
+  return `file '${absPath.replace(/\\/g, "/").replace(/'/g, "'\\''")}'`;
+}
+
+function probeDuration(mediaAbs: string): Promise<number> {
+  return new Promise((res) => {
+    const ffprobe = process.env.FFPROBE_PATH || "ffprobe";
+    const child = spawn(ffprobe, [
+      "-v", "error",
+      "-show_entries", "format=duration",
+      "-of", "default=noprint_wrappers=1:nokey=1",
+      mediaAbs,
+    ], { shell: process.platform === "win32" });
+    let out = "";
+    child.stdout.on("data", (d) => { out += String(d); });
+    child.on("error", () => res(Number.NaN));
+    child.on("close", () => {
+      const n = Number.parseFloat(out.trim());
+      res(Number.isFinite(n) ? n : Number.NaN);
+    });
+  });
+}
+
 /** 据亮度算 gamma(ffmpeg eq 里 gamma>1 才提亮,已实测确认):仅暗于 threshold 才提,使均值→target,上限封顶防过提。返回 1=原样不动 */
 function brightnessGamma(yavg: number, target: number, threshold: number, maxGamma: number): number {
   if (yavg <= 0 || yavg >= threshold) return 1;            // 探测失败 或 本就够亮 → 不动
@@ -132,6 +157,74 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (x: T) => Promise<R
   });
   await Promise.all(workers);
   return out;
+}
+
+const activeFfmpegRenders = new Set<string>();
+const MiB = 1024 * 1024;
+
+function elapsedMs(start: number): string {
+  return `${((Date.now() - start) / 1000).toFixed(1)}s`;
+}
+
+function envNumber(name: string, fallback: number): number {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+function fmtBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return "?";
+  if (bytes >= 1024 * MiB) return `${(bytes / 1024 / MiB).toFixed(1)}GB`;
+  return `${(bytes / MiB).toFixed(0)}MB`;
+}
+
+async function freeBytes(dir: string): Promise<number | null> {
+  try {
+    const s = await statfs(dir);
+    return Number(s.bavail) * Number(s.bsize);
+  } catch {
+    return null;
+  }
+}
+
+function resolveWorkRoot(taskDir: string): string {
+  const configured = process.env.VIDEOHAO_RENDER_WORK_ROOT?.trim();
+  return resolve(configured || join(taskDir, "renders"));
+}
+
+function safeWorkDir(root: string, work: string): boolean {
+  const r = resolve(root);
+  const w = resolve(work);
+  return basename(w).startsWith("ffwork-") && (w === r || w.startsWith(r + sep));
+}
+
+async function preflightRenderResources(input: {
+  workRoot: string;
+  timeline: Timeline;
+  log: (m: string) => void;
+}): Promise<{ ok: boolean; error?: string }> {
+  const { workRoot, timeline, log } = input;
+  const freeMem = freemem();
+  const warnMemMb = envNumber("FFRENDER_WARN_FREE_MEM_MB", 768);
+  if (freeMem < warnMemMb * MiB) {
+    log(`资源预警:当前可用内存仅 ${fmtBytes(freeMem)}，建议先关闭大内存程序；本轮仍按串行渲染继续`);
+  }
+
+  const free = await freeBytes(workRoot);
+  if (free == null) {
+    log(`资源预警:无法探测渲染临时目录剩余空间 ${workRoot}，继续但保留严格成片验收`);
+    return { ok: true };
+  }
+
+  const estimated = Math.max(2 * 1024 * MiB, timeline.duration * 6 * MiB);
+  const minFree = Math.max(envNumber("FFRENDER_MIN_FREE_MB", 4096) * MiB, estimated);
+  if (free < minFree) {
+    return {
+      ok: false,
+      error: `渲染临时目录空间不足: ${workRoot} 剩余 ${fmtBytes(free)}，建议至少 ${fmtBytes(minFree)}。可设置 VIDEOHAO_RENDER_WORK_ROOT 到健康且空间充足的磁盘。`,
+    };
+  }
+  log(`资源检查:临时目录 ${workRoot} 剩余 ${fmtBytes(free)}，预估本轮需要 ${fmtBytes(estimated)}；可用内存 ${fmtBytes(freeMem)}`);
+  return { ok: true };
 }
 
 /** 渲染单张图为一段 clip(zoompan+fade+滤镜);缺图用黑场兜底 */
@@ -181,6 +274,13 @@ export async function renderTimelineFfmpeg(input: RenderInput): Promise<RenderRe
     return { ok: true, note: "mock" };
   }
 
+  const lockKey = resolve(taskDir);
+  if (activeFfmpegRenders.has(lockKey)) {
+    return { ok: false, error: "该任务已有 FFmpeg 渲染进行中，已拒绝并发渲染（防止互删临时文件/覆盖成片）" };
+  }
+  activeFfmpegRenders.add(lockKey);
+
+  const totalStart = Date.now();
   const { width: W, height: H, fps } = timeline;
   const preset = motionPreset(timeline.motion ?? DEFAULT_MOTION);
   const colorFilter = cssFilterToFfmpeg(preset.filter);
@@ -195,8 +295,30 @@ export async function renderTimelineFfmpeg(input: RenderInput): Promise<RenderRe
   const brightThreshold = Number(process.env.FFRENDER_BRIGHTNESS_THRESHOLD ?? "100");
   const brightMaxGamma = Number(process.env.FFRENDER_BRIGHTNESS_MAX_GAMMA ?? "1.8");
 
-  const work = join(taskDir, "renders", `ffwork-${Date.now()}`);
-  await mkdir(work, { recursive: true });
+  const workRoot = resolveWorkRoot(taskDir);
+  try {
+    await mkdir(workRoot, { recursive: true });
+  } catch (e) {
+    activeFfmpegRenders.delete(lockKey);
+    return { ok: false, error: `创建渲染临时根目录失败: ${workRoot}: ${e instanceof Error ? e.message : e}` };
+  }
+  const resourceCheck = await preflightRenderResources({ workRoot, timeline, log });
+  if (!resourceCheck.ok) {
+    activeFfmpegRenders.delete(lockKey);
+    return { ok: false, error: resourceCheck.error };
+  }
+
+  const work = join(workRoot, `ffwork-${Date.now()}-${process.pid}`);
+  if (!safeWorkDir(workRoot, work)) {
+    activeFfmpegRenders.delete(lockKey);
+    return { ok: false, error: `渲染临时目录安全校验失败: ${work}` };
+  }
+  try {
+    await mkdir(work, { recursive: true });
+  } catch (e) {
+    activeFfmpegRenders.delete(lockKey);
+    return { ok: false, error: `创建渲染临时目录失败: ${work}: ${e instanceof Error ? e.message : e}` };
+  }
   registerActiveWorkDir(work);           // 登记为活动目录 → 清理扫描一律跳过它
   void sweepWorkDirs().catch(() => {});  // 顺手清历史孤儿废料(非阻塞;已登记的本次目录不受影响)
   try {
@@ -215,6 +337,7 @@ export async function renderTimelineFfmpeg(input: RenderInput): Promise<RenderRe
     // 自适应提亮:并行探测每段源图亮度,只对偏暗图算 gamma(好图不动)。探测失败/关闭则不提。
     const brightBySrc = new Map<string, string>();
     if (autoBright) {
+      const phaseStart = Date.now();
       const uniqSrcs = Array.from(new Set(imgClips.map((c) => c.src)));
       const yavgs = await mapLimit(uniqSrcs, 8, (s) => {
         const abs = join(taskDir, s);
@@ -225,16 +348,18 @@ export async function renderTimelineFfmpeg(input: RenderInput): Promise<RenderRe
         const g = brightnessGamma(yavgs[i], brightTarget, brightThreshold, brightMaxGamma);
         if (g > 1) { brightBySrc.set(s, `eq=gamma=${g.toFixed(3)},`); lifted++; }
       });
-      log(`自适应提亮:探测 ${uniqSrcs.length} 图,提亮 ${lifted} 张暗图(target=${brightTarget}/阈值=${brightThreshold})`);
+      log(`自适应提亮:探测 ${uniqSrcs.length} 图,提亮 ${lifted} 张暗图(target=${brightTarget}/阈值=${brightThreshold})，耗时 ${elapsedMs(phaseStart)}`);
     }
 
     const clipNames: string[] = [];
+    const clipsStart = Date.now();
     for (let i = 0; i < imgClips.length; i++) {
       const c = imgClips[i];
       const startFrame = Math.round(c.start * fps);
       const endFrame = Math.round((c.start + c.duration) * fps);
       const frames = Math.max(1, endFrame - startFrame);
       const outName = `clip_${String(i).padStart(4, "0")}.mp4`;
+      const clipStart = Date.now();
       const ok = await renderClip(
         { work, srcAbs: join(taskDir, c.src), outName, frames, W, H, fps,
           zoomFrom: c.zoom?.from ?? preset.zoom.from, zoomTo: c.zoom?.to ?? preset.zoom.to,
@@ -243,29 +368,37 @@ export async function renderTimelineFfmpeg(input: RenderInput): Promise<RenderRe
       );
       if (!ok) return { ok: false, error: `第 ${i} 段图渲染失败` };
       clipNames.push(outName);
+      log(`clip ${i + 1}/${imgClips.length}: ${frames} 帧, ${elapsedMs(clipStart)}`);
     }
+    log(`clip 阶段完成: ${imgClips.length} 段, 耗时 ${elapsedMs(clipsStart)}`);
 
     // 2) concat demuxer 拼接图像轨(work 相对路径)
+    let phaseStart = Date.now();
     await writeFile(join(work, "concat.txt"), clipNames.map((n) => `file '${n}'`).join("\n"), "utf-8");
     if ((await runFf(["-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", "concat.txt", "-c", "copy", "video.mp4"], work, log)) !== 0)
       return { ok: false, error: "图像轨 concat 失败" };
+    log(`图像轨 concat 完成: ${elapsedMs(phaseStart)}`);
 
     // 3) 音频:voice 轨按序 concat;bgm 若有则低音量 amix
+    phaseStart = Date.now();
     const voiceClips = timeline.tracks.filter((t) => t.type === "audio" && (t as { role?: string }).role !== "bgm") as Array<Extract<Timeline["tracks"][number], { type: "audio" }>>;
     const bgmClips = timeline.tracks.filter((t) => t.type === "audio" && (t as { role?: string }).role === "bgm") as Array<Extract<Timeline["tracks"][number], { type: "audio" }>>;
     let haveAudio = false;
     if (voiceClips.length > 0) {
-      // 拷贝 voice 文件进 work,concat filter 按序拼接
-      const vArgs: string[] = ["-y", "-loglevel", "error"];
-      const present: number[] = [];
-      voiceClips.forEach((v, i) => {
-        const abs = join(taskDir, v.src);
-        if (existsSync(abs)) { vArgs.push("-i", abs); present.push(i); }
-      });
+      // 用 concat demuxer 顺序拼接 voice 文件，再统一转 AAC。
+      // 比 “几十个 -i + filter_complex concat” 更稳：避开 Windows shell 参数拼接、超长 filtergraph 和 MP3 时间戳边界问题。
+      const present = [...voiceClips]
+        .sort((a, b) => a.start - b.start)
+        .map((v) => join(taskDir, v.src))
+        .filter((abs) => existsSync(abs));
       if (present.length > 0) {
-        const inputs = present.map((_, idx) => `[${idx}:a]`).join("");
-        vArgs.push("-filter_complex", `${inputs}concat=n=${present.length}:v=0:a=1[a]`, "-map", "[a]", "-c:a", "aac", "-b:a", "128k", "voice.m4a");
-        if ((await runFf(vArgs, work, log)) === 0) haveAudio = true;
+        await writeFile(join(work, "voice_concat.txt"), present.map(ffconcatLine).join("\n"), "utf-8");
+        const code = await runFf(
+          ["-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", "voice_concat.txt", "-vn", "-c:a", "aac", "-b:a", "128k", "voice.m4a"],
+          work,
+          log
+        );
+        if (code === 0) haveAudio = true;
         else log("voice concat 失败,成片将无配音");
       }
     }
@@ -281,14 +414,33 @@ export async function renderTimelineFfmpeg(input: RenderInput): Promise<RenderRe
       }
     }
     const audioFile = existsSync(join(work, "audio.m4a")) ? "audio.m4a" : existsSync(join(work, "voice.m4a")) ? "voice.m4a" : null;
+    log(`音频拼接/混音完成: ${elapsedMs(phaseStart)}${audioFile ? "" : "(无音频)"}`);
+    if (audioFile) {
+      const audioDuration = await probeDuration(join(work, audioFile));
+      if (Number.isFinite(audioDuration)) {
+        const tolerance = Math.max(2, timeline.duration * 0.02);
+        log(`音频时长检查: ${audioDuration.toFixed(2)}s / timeline ${timeline.duration.toFixed(2)}s`);
+        if (audioDuration + tolerance < timeline.duration) {
+          return {
+            ok: false,
+            error: `音频拼接时长异常: ${audioDuration.toFixed(2)}s，预期 ${timeline.duration.toFixed(2)}s`,
+          };
+        }
+      } else {
+        log("音频时长检查: ffprobe 读取失败,继续交由成片验收兜底");
+      }
+    }
 
     // 4) 生成 ass(字幕 cue + 标题/声明文字叠加)。渲染时再应用一次违规词库 → 加词后只重渲即生效。
+    phaseStart = Date.now();
     const assPath = join(work, "sub.ass");
     const subFilters = await loadSubtitleFilters();
     if (subFilters.length) log(`字幕渲染:应用 ${subFilters.length} 条违规词库替换`);
     await writeFile(assPath, buildAss(timeline, W, H, subFilters), "utf-8");
+    log(`字幕 ASS 生成完成: ${elapsedMs(phaseStart)}`);
 
     // 5) 烧字幕 + 混音 → 临时输出,再原子 rename 到 outPath
+    phaseStart = Date.now();
     const tmpOut = join(work, "final_out.mp4");
     const burnArgs: string[] = ["-y", "-loglevel", "error", "-i", "video.mp4"];
     if (audioFile) burnArgs.push("-i", audioFile);
@@ -298,19 +450,32 @@ export async function renderTimelineFfmpeg(input: RenderInput): Promise<RenderRe
     if (audioFile) burnArgs.push("-c:a", "aac", "-b:a", "128k");
     burnArgs.push("final_out.mp4");
     if ((await runFf(burnArgs, work, log)) !== 0) return { ok: false, error: "烧字幕/混音失败" };
+    log(`烧字幕/最终编码完成: ${elapsedMs(phaseStart)} (preset=${x264preset}, crf=${process.env.FFRENDER_FINAL_CRF || "20"})`);
+
+    phaseStart = Date.now();
+    const validation = await validateRenderedVideo({ filePath: tmpOut, timeline, log });
+    if (!validation.ok) return { ok: false, error: validation.error ?? "成片验收失败" };
+    log(`成片验收阶段完成: ${elapsedMs(phaseStart)} (mode=${process.env.RENDER_VALIDATE || "strict"})`);
 
     // 原子替换 outPath(Windows 占用则退回 copy)
+    phaseStart = Date.now();
     try {
       if (existsSync(outPath)) await rm(outPath, { force: true });
       await rename(tmpOut, outPath);
     } catch {
       await copyFile(tmpOut, outPath);
     }
-    log(`FFmpeg 渲染完成 → ${outRel}`);
+    log(`成片写入完成: ${elapsedMs(phaseStart)}`);
+    log(`FFmpeg 渲染完成 → ${outRel}，总耗时 ${elapsedMs(totalStart)}`);
     return { ok: true, note: "ffmpeg" };
   } finally {
-    await rm(work, { recursive: true, force: true }).catch(() => {});
+    if (safeWorkDir(workRoot, work)) {
+      await rm(work, { recursive: true, force: true }).catch(() => {});
+    } else {
+      log(`跳过临时目录清理:安全校验失败 ${work}`);
+    }
     unregisterActiveWorkDir(work); // 先删本次目录(期间仍受保护)再摘登记
+    activeFfmpegRenders.delete(lockKey);
   }
 }
 

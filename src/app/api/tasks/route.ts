@@ -3,14 +3,15 @@ import { desc } from "drizzle-orm";
 import { db } from "@/db/client";
 import { tasks } from "@/db/schema";
 import { createTask, advanceTo } from "@/lib/pipeline";
-import { enqueue, ensureQueueRecovered, queueSnapshot } from "@/lib/renderQueue";
+import { enqueue, ensureQueueRecovered, queueSnapshot, recoverOrphanTasksThrottled } from "@/lib/renderQueue";
 import { findCheckpoint, CHECKPOINTS } from "@/lib/checkpoints";
 
 export const dynamic = "force-dynamic";
 
-/** GET /api/tasks — 任务列表(+ 队列快照)。顺带触发队列自愈(幂等,仅首次扫库) */
+/** GET /api/tasks — 任务列表(+ 队列快照)。顺带触发队列自愈(启动)+ 节流复位僵尸任务(会话中途) */
 export async function GET() {
   await ensureQueueRecovered();
+  void recoverOrphanTasksThrottled(); // 非阻塞:会话中途产生的僵尸任务也能被复位
   const rows = await db.select().from(tasks).orderBy(desc(tasks.createdAt)).limit(100);
   return NextResponse.json({ ok: true, tasks: rows, queue: queueSnapshot() });
 }

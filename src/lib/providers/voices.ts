@@ -8,7 +8,7 @@
  * voiceId 直接传给各自 provider 的 API。面板按 group 分组展示、可搜索。
  */
 
-export type TtsProvider = "volcengine" | "stepfun";
+export type TtsProvider = "volcengine" | "stepfun" | "aurastd";
 
 export interface VoiceOption {
   id: string; // provider 的音色ID
@@ -73,8 +73,17 @@ export const STEPFUN_VOICES: VoiceOption[] = [
   { id: "yuanqinansheng", name: "元气男声", group: "通用", gender: "male" },
 ];
 
+/**
+ * Aura Studio (MiniMax 转发) 音色 —— 全部来自用户自定义(data/custom-voices.json),
+ * 由配音面板增删,不在此硬编码。这里留空数组作为"内置"占位;实际清单在运行时合并自定义音色。
+ * 见 src/lib/customVoices.ts 与 /api/voices。
+ */
+export const AURA_VOICES: VoiceOption[] = [];
+
 export function voicesOf(provider: TtsProvider): VoiceOption[] {
-  return provider === "volcengine" ? VOLC_VOICES : STEPFUN_VOICES;
+  if (provider === "stepfun") return STEPFUN_VOICES;
+  if (provider === "aurastd") return AURA_VOICES;
+  return VOLC_VOICES;
 }
 
 export function defaultVoiceOf(provider: TtsProvider): string {

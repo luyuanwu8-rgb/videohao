@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { mkdir, copyFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import type { StepDef, StepContext } from "./types";
 import { generate, generateGrid, sliceGrid } from "@/lib/providers/gptimage";
@@ -89,7 +89,7 @@ export function buildSinglePrompt(beat: Beat, plan: Director, style: ImageStyle,
     `【画面内容】${base}\n` +
     (fb ? `【务必按以下要求修改，与上文冲突时以此为准】${fb}\n` : "") +
     `【避免出现】${negative}。\n` +
-    `不要任何文字、序号、水印、画框。`
+    `画面严禁任何可辨认的文字/汉字/字母/笔迹/书页或屏幕上的可读字/标语/序号/水印/画框;书本、纸张、招牌、屏幕一律留白或只保留无法辨认的模糊纹理。`
   );
 }
 
@@ -149,20 +149,30 @@ export const imageGenerate: StepDef = {
       /* 无历史 */
     }
 
-    // 分类:复用(手改保留 或 签名未变且文件在) vs 需重画
+    // 分类:稳定优先 —— 盘上已有"有效图"(≥8KB,非空非坏)就直接复用,绝不为刷新去赌可能宕机的生图 API。
+    // 只有真正缺图/坏图才调 API。这样图在盘上时本步永远秒过、不依赖外部服务(根治"图全在却卡死重试")。
+    // 注:显式换风格/重绘由上游 saveEdit 删除旧图或走单图重生成入口触发,不受此复用影响。
+    const MIN_VALID_BYTES = 8 * 1024;
+    const fileValid = (beatId: number): boolean => {
+      const p = join(ctx.taskDir, `images/${beatId}.png`);
+      try { return statSync(p).size >= MIN_VALID_BYTES; } catch { return false; }
+    };
     const reuseItems: ImageItem[] = [];
     const toGen: Beat[] = [];
     for (const beat of plan.beats) {
       const p = prev.get(beat.id);
-      const fileOk = existsSync(join(ctx.taskDir, `images/${beat.id}.png`));
-      const sig = sigFor(beat);
-      if (p && fileOk && (p.manual === true || p.sig === sig)) {
-        reuseItems.push({ ...p, sceneIds: beat.sceneIds }); // sceneIds 以最新导演为准(决定时长)
+      if (fileValid(beat.id)) {
+        // 有历史元数据则沿用(更新 sceneIds);无元数据则据当前 beat 合成一条,保证 50 张都能落 images.json
+        const item: ImageItem = p
+          ? { ...p, sceneIds: beat.sceneIds }
+          : { beatId: beat.id, sceneIds: beat.sceneIds, imagePath: `images/${beat.id}.png`,
+              prompt: beatToCellPrompt(beat, plan), visual: beat.composition, reused: true, sig: sigFor(beat) };
+        reuseItems.push(item);
       } else {
         toGen.push(beat);
       }
     }
-    if (reuseItems.length) ctx.log(`续跑复用 ${reuseItems.length} 张(签名未变/手改保留)`);
+    if (reuseItems.length) ctx.log(`续跑复用 ${reuseItems.length} 张(盘上已有有效图,不重复调用生图 API)`);
 
     // allSettled 分批生图:一批失败不拖垮其余;每批经全局调速器
     const batches = chunk(toGen, 9);
@@ -307,7 +317,7 @@ function buildGridPrompt(cellPrompts: string[], ratio: string, style: ImageStyle
     `1. 9 个格子尺寸完全相同，精确等分整张图（每格各占宽 1/3、高 1/3）；\n` +
     `2. 格与格之间必须有清晰的纯白色分隔带，分隔带宽度约为画面宽度的 3%，横竖共 4 条，笔直贯穿、粗细均匀；\n` +
     `3. 每个画面的主体居中，四周留出安全边距，重要内容不要贴近格子边缘（边缘会被分隔带裁到）；\n` +
-    `4. 不要任何文字、序号、水印、外层画框；只在 9 格之间保留白色分隔带。\n` +
+    `4. 严禁任何可辨认的文字/汉字/字母/笔迹/书页或屏幕可读字/标语/序号/水印/外层画框(书本、纸张一律留白或只保留模糊纹理);只在 9 格之间保留白色分隔带。\n` +
     `每格都是完整独立的 ${ratio} 竖版画面，统一采用上述风格。\n` +
     `【避免出现以下内容】${negative}。\n` +
     `各格画面内容如下：\n${lines.join("\n")}`

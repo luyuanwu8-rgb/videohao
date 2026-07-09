@@ -65,9 +65,26 @@ export type Voice = z.infer<typeof voiceSchema>;
 
 // voice-config: 配音的任务级配置（provider/音色/语速），由配音面板编辑，tts 步读取
 export const voiceConfigSchema = z.object({
-  provider: z.enum(["volcengine", "stepfun"]).default("volcengine"),
+  provider: z.enum(["volcengine", "stepfun", "aurastd"]).default("volcengine"),
   voice: z.string().default("zh_male_jieshuoxiaoming_moon_bigtts"),
   speed: z.number().min(0.2).max(3).default(1.0),
+  // Aura(MiniMax)专用高级参数,其它 provider 忽略
+  vol: z.number().min(0).max(10).default(1.0), // 音量
+  pitch: z.number().int().min(-12).max(12).default(0), // 音调
+  emotion: z
+    .enum(["neutral", "happy", "sad", "angry", "fearful", "disgusted", "surprised", "calm", "fluent", "whisper"])
+    .default("neutral"),
+  // 声音效果器(voice_modify):全 0 视为不启用,不下发
+  voiceModify: z
+    .object({
+      pitch: z.number().int().min(-100).max(100).default(0), // 低沉↔明亮
+      intensity: z.number().int().min(-100).max(100).default(0), // 刚劲↔轻柔
+      timbre: z.number().int().min(-100).max(100).default(0), // 浑厚↔清脆
+      soundEffects: z
+        .enum(["", "spacious_echo", "auditorium_echo", "lofi_telephone", "robotic"])
+        .default(""), // 音效,单选
+    })
+    .default({}),
 });
 export type VoiceConfig = z.infer<typeof voiceConfigSchema>;
 

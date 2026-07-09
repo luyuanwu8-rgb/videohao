@@ -1,12 +1,68 @@
 import { NextRequest, NextResponse } from "next/server";
 import { eq, asc } from "drizzle-orm";
+import { readFile, readdir, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { db } from "@/db/client";
 import { tasks, steps, artifacts } from "@/db/schema";
 import { CHECKPOINTS, lastStepOf } from "@/lib/checkpoints";
 
 export const dynamic = "force-dynamic";
 
-/** GET /api/tasks/[id] — 任务详情：task + steps + artifacts */
+/**
+ * 计算生图/渲染的真实进度(从磁盘数文件,非装饰性假进度)。
+ * - 生图:images/ 下已出图数 / 导演 beats 总数。
+ * - 渲染:最新 ffwork-* 目录里已渲 clip 数 / 总数;全渲完则进入"拼接·烧字幕"终编阶段。
+ * 仅在对应步骤 running 时计算,避免无谓磁盘 IO。
+ */
+async function computeProgress(
+  id: string,
+  statusByStep: Map<string, string>
+): Promise<{ imageGen?: { done: number; total: number }; render?: { phase: string; done: number; total: number } }> {
+  const imgRunning = statusByStep.get("imageGenerate") === "running";
+  const renderRunning = statusByStep.get("render") === "running";
+  if (!imgRunning && !renderRunning) return {};
+
+  const { taskDir } = await import("@/lib/pipeline");
+  const dir = taskDir(id);
+  let total = 0;
+  try {
+    const d = JSON.parse(await readFile(join(dir, "director.json"), "utf-8"));
+    total = Array.isArray(d.beats) ? d.beats.length : 0;
+  } catch { /* 导演方案缺失 */ }
+  if (total === 0) return {};
+
+  const out: { imageGen?: { done: number; total: number }; render?: { phase: string; done: number; total: number } } = {};
+
+  if (imgRunning) {
+    const files = await readdir(join(dir, "images")).catch(() => [] as string[]);
+    const done = files.filter((f) => /\.(png|jpg|jpeg|webp)$/i.test(f)).length; // 顶层成图(网格在 _grids 子目录,不计)
+    out.imageGen = { done: Math.min(done, total), total };
+  }
+
+  if (renderRunning) {
+    const rdir = join(dir, "renders");
+    let latest = ""; let latestMs = -1;
+    const ents = await readdir(rdir, { withFileTypes: true }).catch(() => [] as import("node:fs").Dirent[]);
+    for (const e of ents) {
+      if (e.isDirectory() && /^ffwork-/.test(e.name)) {
+        const ms = (await stat(join(rdir, e.name)).catch(() => null))?.mtimeMs ?? -1;
+        if (ms > latestMs) { latestMs = ms; latest = join(rdir, e.name); }
+      }
+    }
+    if (!latest) {
+      out.render = { phase: "准备中", done: 0, total };
+    } else {
+      const cf = await readdir(latest).catch(() => [] as string[]);
+      const clips = cf.filter((f) => /^clip_\d+\.mp4$/.test(f)).length;
+      const phase = clips >= total ? "拼接·烧字幕合成中(最后一步)" : "分段渲染中";
+      out.render = { phase, done: Math.min(clips, total), total };
+    }
+  }
+  return out;
+}
+
+/** GET /api/tasks/[id] — 任务详情：task + steps + artifacts + 实时进度 */
 export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -53,6 +109,8 @@ export async function GET(
     };
   });
 
+  const progress = await computeProgress(id, statusByStep);
+
   return NextResponse.json({
     ok: true,
     task,
@@ -60,6 +118,7 @@ export async function GET(
     artifacts: artifactRows,
     checkpoints,
     totalCost,
+    progress,
   });
 }
 

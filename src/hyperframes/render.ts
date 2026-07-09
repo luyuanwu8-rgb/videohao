@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { Timeline } from "@/lib/timeline";
 import { buildCompositionHtml } from "./template";
+import { validateRenderedVideo } from "./validate";
 
 /**
  * 渲染后端抽象。
@@ -116,26 +117,22 @@ async function renderReal(input: RenderInput): Promise<RenderResult> {
   await mkdir(dirname(gsapDst), { recursive: true });
   if (existsSync(gsapSrc)) await copyFile(gsapSrc, gsapDst);
 
-  // --workers：并行多 Chrome 截图，缩短逐帧 capture。每 worker 一个独立无头 Chrome(官方实测各占~256MB，
-  //   与你日常开的浏览器是完全独立的进程，不复用不共享——但吃的是同一块物理内存)。
-  // 默认固定 4：
-  //   * 旧版写死 2 是历史包袱(怕 OOM)，等于亲手把速度按死；
-  //   * 但本机内存常被浏览器占到只剩 2~3G，若放 auto，HyperFrames 探测到内存吃紧会自动进
-  //     low-memory-mode 锁死 1 worker —— 比 2 还慢；auto 在内存富裕时又可能拉满 12 个 Chrome 撑爆。
-  //   * 固定 4 是折中：4×256MB≈1G，在 2~3G 空闲里有余量，拿到 4 倍并行，且不依赖你关浏览器。
-  //   内存充裕想更快可设 HYPERFRAMES_WORKERS=auto 或更大数。
-  // --no-low-memory-mode：强制禁用"低内存自动降速"，防止被你浏览器的内存占用拖回 1 worker。
-  //   (真到极限 OOM 退出码1，再用 HYPERFRAMES_WORKERS 调低即可。)
+  // --workers：HyperFrames 回退路径会启动多个 Headless Chrome 截图进程。
+  // 这条路径只作为 FFmpeg 原生渲染失败后的兜底，默认优先稳定而非冲速度：
+  // - 无 GPU / 16GB 内存 / 机械盘写入时，4 workers 容易放大 Chrome 崩溃和 I/O 错误。
+  // - 默认 2 workers；确认机器空闲且内存足够时，可用 HYPERFRAMES_WORKERS=4/auto 临时提速。
+  // - 默认保留 HyperFrames 的低内存保护；只有显式 HYPERFRAMES_NO_LOW_MEMORY=1 才关闭。
   // --quality draft：带货视频是静图+字幕+慢推拉，draft 肉眼几乎无差但明显更快(默认 standard)。
   //   要高画质定稿可用 HYPERFRAMES_QUALITY=high 覆盖。
   const rendersDir = join(taskDir, "renders");
   // 渲染前清理 renders 下的"陈旧"work-* 残留(>10分钟,确属上次遗留)，
   // 不碰新近目录——配合任务锁，双保险防误删活动中的帧目录。
   await cleanRendersDir(rendersDir, 10 * 60 * 1000);
-  const workers = process.env.HYPERFRAMES_WORKERS || "4";
+  const workers = process.env.HYPERFRAMES_WORKERS || "2";
   const quality = process.env.HYPERFRAMES_QUALITY || "draft";
+  const noLowMemoryMode = process.env.HYPERFRAMES_NO_LOW_MEMORY === "1";
   const MAX_ATTEMPTS = Number(process.env.RENDER_MAX_ATTEMPTS ?? "3"); // 含首次,共试3次
-  log(`渲染参数: workers=${workers} quality=${quality} fps=${timeline.fps} (no-low-memory-mode)`);
+  log(`渲染参数: workers=${workers} quality=${quality} fps=${timeline.fps}${noLowMemoryMode ? " (no-low-memory-mode)" : ""}`);
 
   let code = 1;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -144,24 +141,21 @@ async function renderReal(input: RenderInput): Promise<RenderResult> {
       await cleanRendersDir(rendersDir, 0); // 重试时清全部 work（本任务已加锁，无并发风险）
       log(`渲染重试 第 ${attempt}/${MAX_ATTEMPTS} 次…`);
     }
-    code = await runHyperframes(
-      [
-        "--yes",
-        `hyperframes@${HF_VERSION}`,
-        "render",
-        ".",
-        "--fps",
-        String(timeline.fps),
-        "--workers",
-        workers,
-        "--quality",
-        quality,
-        "--no-low-memory-mode",
-        "--quiet",
-      ],
-      taskDir,
-      log
-    );
+    const args = [
+      "--yes",
+      `hyperframes@${HF_VERSION}`,
+      "render",
+      ".",
+      "--fps",
+      String(timeline.fps),
+      "--workers",
+      workers,
+      "--quality",
+      quality,
+      "--quiet",
+    ];
+    if (noLowMemoryMode) args.splice(args.length - 1, 0, "--no-low-memory-mode");
+    code = await runHyperframes(args, taskDir, log);
     if (code === 0) break; // 成功就退出重试
     log(`渲染退出码 ${code}（第 ${attempt} 次）`);
   }
@@ -174,6 +168,8 @@ async function renderReal(input: RenderInput): Promise<RenderResult> {
   if (!produced) {
     return { ok: false, error: "渲染完成但未找到产物 mp4" };
   }
+  const validation = await validateRenderedVideo({ filePath: produced, timeline, log });
+  if (!validation.ok) return { ok: false, error: validation.error ?? "成片验收失败" };
   // Windows 上 final.mp4 可能被浏览器 <video> 占用句柄，直接 rename 会 EPERM。
   // 先尝试删旧文件再 rename；失败则退回 copyFile（copy 不要求独占重命名权限）。
   try {
@@ -262,4 +258,3 @@ async function cleanRendersDir(dir: string, minAgeMs = 0): Promise<void> {
     await rm(p, { recursive: true, force: true }).catch(() => {});
   }
 }
-

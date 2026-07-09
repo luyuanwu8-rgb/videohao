@@ -36,6 +36,10 @@ export type Detail = {
   steps: StepRow[];
   artifacts?: Artifact[];
   totalCost: number;
+  progress?: {
+    imageGen?: { done: number; total: number };
+    render?: { phase: string; done: number; total: number };
+  };
 };
 
 export type PanelProps = {

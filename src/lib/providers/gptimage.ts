@@ -25,7 +25,7 @@ async function requestImage(
 
   // gpt-image-2 出图慢(实测单图 ~44s)，undici 默认超时会抛 "fetch failed"。
   // 显式长超时 + 失败重试，避免长耗时请求被底层中断。
-  const timeoutMs = Number(env("GPTIMAGE_TIMEOUT_MS", "180000"));
+  const timeoutMs = Number(env("GPTIMAGE_TIMEOUT_MS", "90000"));
   const maxRetry = Number(env("GPTIMAGE_MAX_RETRY", "2"));
 
   let lastErr: unknown;
