@@ -7,5 +7,11 @@
  */
 import { config } from "dotenv";
 
+// 命令行/服务管理器显式传入的变量优先级最高，尤其是
+// PIPELINE_MODE=mock；否则 .env.local 的 real 会让本地测试误发付费请求。
+const inheritedEnv = { ...process.env };
 config({ path: ".env" });
 config({ path: ".env.local", override: true });
+for (const [key, value] of Object.entries(inheritedEnv)) {
+  if (value !== undefined) process.env[key] = value;
+}

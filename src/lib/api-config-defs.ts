@@ -46,8 +46,10 @@ export const API_CONFIG_DEFS: ApiConfigDef[] = [
   { provider: "gptimage", key: "GPTIMAGE_BASE_URL", description: "生图接口域名", isSecret: false },
   { provider: "gptimage", key: "GPTIMAGE_API_KEY", description: "生图 API 密钥", isSecret: true },
   { provider: "gptimage", key: "GPTIMAGE_MODEL", description: "生图模型(默认 gpt-image-1)", isSecret: false },
-  { provider: "gptimage", key: "GPTIMAGE_TIMEOUT_MS", description: "生图超时ms(默认180000)", isSecret: false },
-  { provider: "gptimage", key: "GPTIMAGE_MAX_RETRY", description: "生图重试次数(默认2)", isSecret: false },
+  { provider: "gptimage", key: "GPTIMAGE_TIMEOUT_MS", description: "生图超时ms(默认240000，避免中转慢返回时本地先断开)", isSecret: false },
+  { provider: "gptimage", key: "GPTIMAGE_MAX_RETRY", description: "生图重试次数(默认0，避免接口已计费但本地重试导致重复扣费)", isSecret: false },
+  { provider: "gptimage", key: "GPTIMAGE_CONCURRENCY", description: "生图并发(默认1，稳定/止损优先)", isSecret: false },
+  { provider: "gptimage", key: "GPTIMAGE_MIN_GAP_MS", description: "生图请求间隔ms(默认0，可用于限流)", isSecret: false },
   { provider: "gptimage", key: "GPTIMAGE_PRICE_PER_IMAGE", description: "单图成本(可空)", isSecret: false },
 
   // TikHub(抖音解析)

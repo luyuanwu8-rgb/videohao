@@ -20,6 +20,7 @@ export type Artifact = {
   version: number;
   tag: string | null;
   meta: Record<string, unknown> | null;
+  createdAt?: number;
 };
 
 export type Detail = {

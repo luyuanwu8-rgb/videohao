@@ -16,7 +16,7 @@ export interface Checkpoint {
   steps: StepName[];
   editable?: string;
   /** 编辑该检查点产物时,需要级联重置/重跑的下游起点 step(用于"改了上游→下游失效") */
-  invalidatesFrom?: StepName;
+  invalidatesFrom?: StepName | StepName[];
 }
 
 export const CHECKPOINTS: Checkpoint[] = [
@@ -47,7 +47,7 @@ export const CHECKPOINTS: Checkpoint[] = [
     label: "分镜",
     steps: ["storyboard"],
     editable: "storyboard.json",
-    invalidatesFrom: "director",
+    invalidatesFrom: ["assetSearch", "tts"],
   },
   {
     key: "director",

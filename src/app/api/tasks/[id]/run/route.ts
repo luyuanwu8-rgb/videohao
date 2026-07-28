@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { eq, and } from "drizzle-orm";
 import { db } from "@/db/client";
-import { steps } from "@/db/schema";
+import { steps, tasks } from "@/db/schema";
 import { runStep } from "@/lib/pipeline";
 import { PIPELINE_DEPS, type StepName } from "@/lib/steps/types";
 
@@ -34,6 +34,14 @@ export async function POST(
   }
 
   const result = await runStep(id, step);
+  await db
+    .update(tasks)
+    .set({
+      status: result.ok ? "pending" : "failed",
+      error: result.ok ? null : result.error,
+      updatedAt: Math.floor(Date.now() / 1000),
+    })
+    .where(eq(tasks.id, id));
   return NextResponse.json({ ok: result.ok, error: result.error, reset: downstream });
 }
 

@@ -2,7 +2,19 @@ import type { StepDef } from "./types";
 import { timelineSchema } from "@/lib/timeline";
 import { renderTimeline } from "@/hyperframes/render";
 import { validateRenderedVideo } from "@/hyperframes/validate";
-import { motionPreset } from "@/lib/motions";
+import { DEFAULT_MOTION, MOTION_KEYS, motionPreset } from "@/lib/motions";
+import { z } from "zod";
+
+const renderConfigSchema = z.object({
+  motions: z.array(z.string()).optional(),
+  motion: z.enum(["kenBurns", "zoomIn", "static"]).optional(),
+});
+
+const LEGACY_MOTION: Record<string, string> = {
+  kenBurns: "cinematic",
+  zoomIn: "fastcut",
+  static: "zen",
+};
 
 /**
  * render: 读各动效的 timeline-<key>.json → 渲染后端 → renders/<key>.mp4。
@@ -80,9 +92,32 @@ export const render: StepDef = {
 /** 列出任务目录里的 timeline-<key>.json 对应的动效 key（按 motions.ts 顺序） */
 async function listMotionTimelines(ctx: {
   taskDir: string;
+  readJSON: <T>(relPath: string) => Promise<T>;
 }): Promise<string[]> {
-  const { readdir } = await import("node:fs/promises");
-  const { MOTION_KEYS } = await import("@/lib/motions");
+  let desired: string[] = [];
+  try {
+    const cfg = renderConfigSchema.parse(await ctx.readJSON("render-config.json"));
+    desired = (cfg.motions ?? []).filter((m) => MOTION_KEYS.includes(m));
+    if (desired.length === 0 && cfg.motion) {
+      const mapped = LEGACY_MOTION[cfg.motion];
+      if (mapped) desired = [mapped];
+    }
+  } catch {
+    desired = [];
+  }
+  if (desired.length === 0) desired = [DEFAULT_MOTION];
+
+  const { access, readdir } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const existing: string[] = [];
+  for (const key of desired) {
+    const ok = await access(join(ctx.taskDir, `timeline-${key}.json`))
+      .then(() => true)
+      .catch(() => false);
+    if (ok) existing.push(key);
+  }
+  if (existing.length > 0) return existing;
+
   const files = await readdir(ctx.taskDir).catch(() => [] as string[]);
   const present = new Set(
     files

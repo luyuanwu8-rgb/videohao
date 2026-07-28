@@ -18,8 +18,8 @@ export interface AsrResult {
 }
 
 function stepKey(): string {
-  const k = process.env.STEP_API_KEY || process.env.STEPFUN_API_KEY;
-  if (!k) throw new Error("missing env: STEP_API_KEY (或 STEPFUN_API_KEY)");
+  const k = env("STEP_API_KEY") || env("STEPFUN_API_KEY");
+  if (!k) throw new Error("missing config/env: STEP_API_KEY (或 STEPFUN_API_KEY)");
   return k;
 }
 
@@ -30,7 +30,7 @@ function stepKey(): string {
  */
 let gateChain: Promise<void> = Promise.resolve();
 function minIntervalMs(): number {
-  const v = Number(process.env.STEP_MIN_INTERVAL_MS);
+  const v = Number(env("STEP_MIN_INTERVAL_MS"));
   return Number.isFinite(v) && v > 0 ? v : 6500;
 }
 /** 排队取一个发射许可：保证两次请求间隔 ≥ minInterval */

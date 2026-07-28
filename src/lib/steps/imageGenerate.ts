@@ -10,6 +10,7 @@ import { env } from "@/lib/providers/base";
 import { directorSchema, imagesSchema, type ImageItem, type Beat, type Director } from "@/lib/domain";
 import { imageStyle, DEFAULT_STYLE, COMMON_NEGATIVE, type ImageStyle } from "@/lib/styles";
 import { z } from "zod";
+import { applyBookShowcases } from "@/lib/bookCover";
 
 /**
  * imageGenerate: 按导演的「画面节拍」出图——每拍一张图。
@@ -133,8 +134,8 @@ export const imageGenerate: StepDef = {
     // 全局调速器:跨任务限 gpt-image 并发(默认 2),防两任务同时生图打爆 429
     configureLimiter(
       "gptimage",
-      Number(env("GPTIMAGE_CONCURRENCY", "2")),
-      Number(env("GPTIMAGE_MIN_GAP_MS", "0"))
+      parsePositiveInt(env("GPTIMAGE_CONCURRENCY", "1"), 1),
+      parseNonNegativeInt(env("GPTIMAGE_MIN_GAP_MS", "0"), 0)
     );
 
     const sigFor = (beat: Beat) => sigOf(style.key, ratio, toneKey, beatToCellPrompt(beat, plan));
@@ -164,9 +165,11 @@ export const imageGenerate: StepDef = {
       if (fileValid(beat.id)) {
         // 有历史元数据则沿用(更新 sceneIds);无元数据则据当前 beat 合成一条,保证 50 张都能落 images.json
         const item: ImageItem = p
-          ? { ...p, sceneIds: beat.sceneIds }
+          ? { ...p, sceneIds: beat.sceneIds, imagePath: p.baseImagePath ?? p.imagePath }
           : { beatId: beat.id, sceneIds: beat.sceneIds, imagePath: `images/${beat.id}.png`,
               prompt: beatToCellPrompt(beat, plan), visual: beat.composition, reused: true, sig: sigFor(beat) };
+        delete item.baseImagePath;
+        delete item.bookShowcase;
         reuseItems.push(item);
       } else {
         toGen.push(beat);
@@ -174,21 +177,26 @@ export const imageGenerate: StepDef = {
     }
     if (reuseItems.length) ctx.log(`续跑复用 ${reuseItems.length} 张(盘上已有有效图,不重复调用生图 API)`);
 
-    // allSettled 分批生图:一批失败不拖垮其余;每批经全局调速器
+    // 逐批生图:稳定/止损优先。接口超时、余额、网关类失败时立即停止后续批次，
+    // 避免"后台继续扣费、本地拿不到图"时继续扩大消耗。
     const batches = chunk(toGen, 9);
     const generated = new Map<number, ImageItem>();
-    const results = await Promise.allSettled(
-      batches.map((batch, b) => withLimit("gptimage", () => genGridBatch(ctx, batch, b, opts)))
-    );
-
     const failedBatches: number[] = [];
-    results.forEach((r, b) => {
-      if (r.status === "fulfilled") for (const it of r.value) generated.set(it.beatId, it);
-      else {
-        failedBatches.push(b);
-        ctx.log(`网格批 ${b} 失败:${r.reason instanceof Error ? r.reason.message : r.reason}`);
+    for (let b = 0; b < batches.length; b++) {
+      try {
+        const batchItems = await withLimit("gptimage", () => genGridBatch(ctx, batches[b], b, opts));
+        for (const it of batchItems) generated.set(it.beatId, it);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        ctx.log(`网格批 ${b} 失败:${msg}`);
+        if (isProviderRequestFailure(msg)) {
+          ctx.log(`网格批 ${b} 属于接口超时/余额/网关类失败，已停止后续批次和自动逐张降级，避免重复扣费`);
+          break;
+        } else {
+          failedBatches.push(b);
+        }
       }
-    });
+    }
 
     // 失败批降级:逐张单图(独立请求,一张失败不影响其余),仍走调速器
     for (const b of failedBatches) {
@@ -211,13 +219,20 @@ export const imageGenerate: StepDef = {
       if (it) items.push(it);
       else missing.push(beat.id);
     }
-    await ctx.writeJSON("images.json", imagesSchema.parse({ items }));
 
     if (missing.length) {
+      await ctx.writeJSON("images.json", imagesSchema.parse({ items }));
       const msg = `${missing.length} 个节拍缺图(beatId ${missing.join(",")}),已生成 ${items.length} 张。可重跑本步或在场景图面板单图重生成`;
       ctx.log(`⚠️ ${msg}`);
       return { ok: false, error: msg };
     }
+
+    const bookResult = await applyBookShowcases(ctx.taskDir, items, plan);
+    await ctx.writeJSON("images.json", imagesSchema.parse({ items: bookResult.items }));
+    if (bookResult.appliedBeatIds.length) {
+      ctx.log(`真实书籍封面本地合成: beat ${bookResult.appliedBeatIds.join(",")}（生图 API 调用 0）`);
+    }
+    for (const error of bookResult.errors) ctx.log(`⚠️ ${error}，已保留原场景图`);
     ctx.log(
       `生图: ${items.length} 张(节拍数) = ${batches.length} 网格 + ${reuseItems.length} 复用(比例 ${ratio})`
     );
@@ -328,4 +343,27 @@ function chunk<T>(arr: T[], n: number): T[][] {
   const out: T[][] = [];
   for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
   return out;
+}
+
+/** 接口侧已经接单但本地没拿到结果时，继续自动重试/逐张降级会扩大扣费。 */
+function isProviderRequestFailure(msg: string): boolean {
+  return (
+    msg.includes("gptimage generate HTTP") ||
+    msg.includes("This operation was aborted") ||
+    msg.includes("fetch failed") ||
+    msg.includes("下载生成图失败") ||
+    msg.includes("非 JSON") ||
+    msg.includes("insufficient_quota") ||
+    msg.includes("quota")
+  );
+}
+
+function parsePositiveInt(raw: string, fallback: number): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
+function parseNonNegativeInt(raw: string, fallback: number): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
 }

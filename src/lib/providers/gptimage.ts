@@ -1,6 +1,8 @@
 import { env, requireEnv, type Mode } from "./base";
 import { writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 
 /**
  * gpt-image 生图 provider。
@@ -17,42 +19,44 @@ import { spawn } from "node:child_process";
 /** 向接口请求一张图，返回 PNG buffer + 成本。size 直接透传给 API。 */
 async function requestImage(
   prompt: string,
-  sizeStr: string
+  sizeStr: string,
+  options?: { maxRetry?: number }
 ): Promise<{ buf: Buffer; cost: number }> {
   const base = normalizeBaseUrl(env("GPTIMAGE_BASE_URL", "https://api.openai.com/v1"));
   const key = requireEnv("GPTIMAGE_API_KEY");
   const model = env("GPTIMAGE_MODEL", "gpt-image-1");
 
-  // gpt-image-2 出图慢(实测单图 ~44s)，undici 默认超时会抛 "fetch failed"。
-  // 显式长超时 + 失败重试，避免长耗时请求被底层中断。
-  const timeoutMs = Number(env("GPTIMAGE_TIMEOUT_MS", "90000"));
-  const maxRetry = Number(env("GPTIMAGE_MAX_RETRY", "2"));
+  // gpt-image-2 经中转实测可能超过 250s；如果本地先 abort，
+  // 中转侧仍可能继续生成并计费，但本地拿不到图片。默认给足等待时间，
+  // 且默认不自动重试，避免同一张图重复扣费。
+  const timeoutMs = Math.max(
+    parsePositiveInt(env("GPTIMAGE_TIMEOUT_MS", "900000"), 900000),
+    900000
+  );
+  const maxRetry =
+    options?.maxRetry ??
+    parseNonNegativeInt(env("GPTIMAGE_MAX_RETRY", "0"), 0);
 
   let lastErr: unknown;
   for (let attempt = 0; attempt <= maxRetry; attempt++) {
-    const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), timeoutMs);
     try {
-      const resp = await fetch(`${base}/images/generations`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${key}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ model, prompt, size: sizeStr, n: 1 }),
-        signal: ac.signal,
-      });
-      if (!resp.ok) {
-        const t = await resp.text().catch(() => "");
-        throw new Error(`gptimage generate HTTP ${resp.status}: ${t.slice(0, 200)}`);
+      const resp = await postJson(
+        `${base}/images/generations`,
+        { model, prompt, size: sizeStr, n: 1 },
+        key,
+        timeoutMs
+      );
+      if (resp.status < 200 || resp.status >= 300) {
+        throw new Error(`gptimage generate HTTP ${resp.status}: ${resp.body.toString("utf-8").slice(0, 200)}`);
       }
       // 中转限流/网关错误时可能返回 HTML 首页而非 JSON —— 显式识别，避免 JSON.parse 抛晦涩错误
-      const ctype = resp.headers.get("content-type") ?? "";
+      const ctype = resp.contentType;
       if (!ctype.includes("json")) {
-        const t = await resp.text().catch(() => "");
-        throw new Error(`gptimage 返回非 JSON(疑似中转限流/网关页): ${t.slice(0, 120)}`);
+        throw new Error(
+          `gptimage 返回非 JSON(疑似中转限流/网关页): ${resp.body.toString("utf-8").slice(0, 120)}`
+        );
       }
-      const json = (await resp.json()) as {
+      const json = JSON.parse(resp.body.toString("utf-8")) as {
         data?: { b64_json?: string; url?: string }[];
       };
       const item = json.data?.[0];
@@ -81,11 +85,52 @@ async function requestImage(
         msg.includes("非 JSON");
       if (attempt >= maxRetry || !retryable) break;
       await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
-    } finally {
-      clearTimeout(timer);
     }
   }
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
+function postJson(
+  urlString: string,
+  data: unknown,
+  apiKey: string,
+  timeoutMs: number
+): Promise<{ status: number; contentType: string; body: Buffer }> {
+  return new Promise((resolvePromise, reject) => {
+    const url = new URL(urlString);
+    const payload = Buffer.from(JSON.stringify(data), "utf-8");
+    const requestFn = url.protocol === "https:" ? httpsRequest : httpRequest;
+    const req = requestFn(
+      url,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "Content-Length": payload.length,
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        res.on("end", () => {
+          const rawType = res.headers["content-type"];
+          resolvePromise({
+            status: res.statusCode ?? 0,
+            contentType: Array.isArray(rawType) ? rawType.join(";") : rawType ?? "",
+            body: Buffer.concat(chunks),
+          });
+        });
+        res.on("error", reject);
+      }
+    );
+    const timer = setTimeout(() => {
+      req.destroy(new Error(`gptimage request timeout after ${timeoutMs}ms`));
+    }, timeoutMs);
+    req.on("close", () => clearTimeout(timer));
+    req.on("error", reject);
+    req.end(payload);
+  });
 }
 
 /** 单图生成。9:16 等竖图映射到接口尺寸档。 */
@@ -100,6 +145,25 @@ export async function generate(
     return { cost: 0 };
   }
   const { buf, cost } = await requestImage(prompt, pickSize(size));
+  await writeFile(destPath, buf);
+  return { cost };
+}
+
+/**
+ * 独立封面单图：尺寸直接透传给中转，并硬性关闭自动重试。
+ * 封面请求可能已在中转侧接单计费，本地重试会扩大重复消费。
+ */
+export async function generateCover(
+  prompt: string,
+  destPath: string,
+  sizeStr: string,
+  mode: Mode
+): Promise<{ cost: number }> {
+  if (mode === "mock") {
+    await writeFile(destPath, MOCK_PNG);
+    return { cost: 0 };
+  }
+  const { buf, cost } = await requestImage(prompt, sizeStr, { maxRetry: 0 });
   await writeFile(destPath, buf);
   return { cost };
 }
@@ -304,6 +368,16 @@ function normalizeBaseUrl(base: string): string {
   const b = (base || "").replace(/\/+$/, "");
   if (b.endsWith("/v1")) return b;
   return b ? `${b}/v1` : "";
+}
+
+function parsePositiveInt(raw: string, fallback: number): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
+function parseNonNegativeInt(raw: string, fallback: number): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
 }
 
 // 最小 1x1 PNG 占位

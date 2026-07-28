@@ -93,11 +93,19 @@ export const imageItemSchema = z.object({
   beatId: z.number().int().default(0), // 来自导演的画面节拍号
   sceneIds: z.array(z.number().int()).default([]), // 本图覆盖的句子(决定显示多久)
   imagePath: z.string(),
+  baseImagePath: z.string().optional(), // 书籍展示等本地合成前的原场景图，便于无损恢复
   prompt: z.string(),
   visual: z.string(), // 冗余存一份(导演 composition)，将来 embed 做复用匹配
   reused: z.boolean().default(false), // 是否来自素材库复用（v1 恒 false）
   sig: z.string().optional(), // 内容签名(style+ratio+setting+cast+composition),用于幂等续跑:签名不变+文件在则跳过重画
   manual: z.boolean().optional(), // 用户单图重生成产出,整批重跑时保留不覆盖
+  bookShowcase: z
+    .object({
+      kind: z.enum(["recommendation", "ending", "recommendation-ending"]),
+      triggerText: z.string().default(""),
+      triggerSceneId: z.number().int().positive().optional(),
+    })
+    .optional(),
 });
 export const imagesSchema = z.object({
   items: z.array(imageItemSchema),

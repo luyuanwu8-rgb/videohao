@@ -5,7 +5,8 @@ import { synthesize, synthesizeSilence, CensorshipError, estimateDuration } from
 import { synthesizeVolc } from "@/lib/providers/volcengine";
 import { synthesizeAura } from "@/lib/providers/aurastd";
 import { chat } from "@/lib/providers/llm";
-import { storyboardSchema, voiceSchema, voiceConfigSchema, type VoiceSegment, type VoiceConfig } from "@/lib/domain";
+import { storyboardSchema, voiceSchema, voiceConfigSchema, rewriteSchema, type VoiceSegment, type VoiceConfig } from "@/lib/domain";
+import { validateScriptCoverage } from "@/lib/scriptCoverage";
 
 /**
  * tts: 每个 scene 一段配音，记录真实时长。
@@ -44,6 +45,14 @@ export const tts: StepDef = {
   output: "voice.json",
   run: async (ctx) => {
     const board = storyboardSchema.parse(await ctx.readJSON("storyboard.json"));
+    const rw = rewriteSchema.parse(await ctx.readJSON("rewrite.json"));
+    const coverage = validateScriptCoverage(
+      rw.script,
+      board.scenes.map((scene) => scene.text).join("")
+    );
+    if (!coverage.ok) {
+      return { ok: false, error: `\u914d\u97f3\u5df2\u505c\u6b62\uff1a\u5206\u955c\u6ca1\u6709\u8986\u76d6\u5b8c\u6574\u6587\u6848\uff0c${coverage.reason}` };
+    }
     await mkdir(join(ctx.taskDir, "voice"), { recursive: true });
 
     // 读配音配置（面板写入，缺省用 schema 默认：火山解说小明）

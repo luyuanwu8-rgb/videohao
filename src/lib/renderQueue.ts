@@ -141,7 +141,12 @@ async function pump(): Promise<void> {
       const taskId = queue.shift()!;
       currentTaskId = taskId;
       try {
-        await advanceTo(taskId, "final");
+        const result = await advanceTo(taskId, "final");
+        if (result.ok) {
+          // 发布资料独立异步生成：不阻塞下一条渲染，失败也不回写成片状态。
+          const { triggerPublishKit } = await import("./publishKit");
+          triggerPublishKit(taskId, "all");
+        }
       } catch (e) {
         // 单条失败已由 advanceTo 内部标记 task failed;这里仅吞掉,继续下一条
         const msg = e instanceof Error ? e.message : String(e);

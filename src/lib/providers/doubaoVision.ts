@@ -1,4 +1,4 @@
-import { env, requireEnv, type Mode } from "./base";
+import { env, type Mode } from "./base";
 import { readFile } from "node:fs/promises";
 
 /**
@@ -42,10 +42,11 @@ export async function rebindCells(
   const n = cellPaths.length;
   if (n <= 1 || descriptions.length !== n) return null; // 单图或不匹配无需归位
 
-  const key = requireEnv("ARK_API_KEY");
+  const key = env("ARK_API_KEY");
+  if (!key) return null; // 未配置视觉归位时跳过，不影响已生成网格图落盘
   const base = env("ARK_BASE_URL", DEFAULT_BASE).replace(/\/+$/, "");
   const model = env("ARK_VISION_MODEL", DEFAULT_MODEL);
-  const timeoutMs = Number(env("ARK_TIMEOUT_MS", "60000"));
+  const timeoutMs = parsePositiveInt(env("ARK_TIMEOUT_MS", "60000"), 60000);
 
   // 组装:图1..图n(base64)+ 描述列表 + 输出指令
   const content: Array<Record<string, unknown>> = [];
@@ -95,4 +96,9 @@ export async function rebindCells(
     }
   }
   return null;
+}
+
+function parsePositiveInt(raw: string, fallback: number): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
 }

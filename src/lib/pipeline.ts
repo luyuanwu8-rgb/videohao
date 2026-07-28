@@ -335,11 +335,11 @@ export async function advanceTo(
       }
     }
 
-    // 跑到末检查点才算 completed,否则保持 running 以示"还有后续步"
+    // 跑到末检查点才算 completed；中间检查点完成后回到 pending，表示等待用户确认。
     const isFinal = checkpointKey === CHECKPOINTS[CHECKPOINTS.length - 1].key;
     await db
       .update(tasks)
-      .set({ status: isFinal ? "completed" : "running", updatedAt: now() })
+      .set({ status: isFinal ? "completed" : "pending", updatedAt: now() })
       .where(eq(tasks.id, taskId));
     return { ok: true };
   });
@@ -353,7 +353,7 @@ export async function editArtifact(
   taskId: string,
   relPath: string,
   data: unknown,
-  invalidateFrom?: StepName
+  invalidateFrom?: StepName | StepName[]
 ): Promise<void> {
   const dir = taskDir(taskId);
   const abs = join(dir, relPath);
@@ -362,8 +362,13 @@ export async function editArtifact(
   await registerArtifact(taskId, relPath, { fileType: "json", tag: "edited" });
 
   if (invalidateFrom) {
-    const downstream = collectDownstream(invalidateFrom);
-    for (const name of [invalidateFrom, ...downstream]) {
+    const starts = Array.isArray(invalidateFrom) ? invalidateFrom : [invalidateFrom];
+    const reset = new Set<StepName>();
+    for (const start of starts) {
+      reset.add(start);
+      for (const name of collectDownstream(start)) reset.add(name);
+    }
+    for (const name of reset) {
       await db
         .update(stepsTable)
         .set({ status: "pending", error: null, startedAt: null, endedAt: null })

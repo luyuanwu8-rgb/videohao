@@ -8,6 +8,7 @@ import {
 import { timelineSchema, type Timeline } from "@/lib/timeline";
 import { motionPreset, DEFAULT_MOTION, MOTION_KEYS } from "@/lib/motions";
 import { z } from "zod";
+import { rm } from "node:fs/promises";
 
 const subtitleFileSchema = z.object({
   cues: z.array(
@@ -73,6 +74,11 @@ export const timelineBuild: StepDef = {
       if (mapped) motions = [mapped];
     }
     if (motions.length === 0) motions = [DEFAULT_MOTION];
+    for (const key of MOTION_KEYS) {
+      if (!motions.includes(key)) {
+        await rm(`${ctx.taskDir}/timeline-${key}.json`, { force: true }).catch(() => {});
+      }
+    }
 
     const W = 1080;
     const H = 1920;
@@ -114,6 +120,35 @@ export const timelineBuild: StepDef = {
       for (const img of images.items) {
         const ids = img.sceneIds?.length ? img.sceneIds : [];
         if (!ids.length) continue;
+        const triggerSceneId = img.bookShowcase?.triggerSceneId;
+        const triggerIndex =
+          triggerSceneId === undefined ? -1 : ids.indexOf(triggerSceneId);
+        if (
+          img.baseImagePath &&
+          triggerIndex >= 0 &&
+          ids.length > 1 &&
+          img.bookShowcase?.kind !== "ending"
+        ) {
+          for (let i = 0; i < ids.length; i++) {
+            const id = ids[i];
+            const partDur =
+              (durBySc.get(id) ?? 0) / (coverCount.get(id) ?? 1) || 0.1;
+            const useBook =
+              img.bookShowcase?.kind === "recommendation-ending"
+                ? i >= triggerIndex
+                : id === triggerSceneId;
+            tracks.push({
+              type: "image",
+              src: useBook ? img.imagePath : img.baseImagePath,
+              start: imgCursor,
+              duration: partDur,
+              zoom: preset.zoom,
+              sceneId: id,
+            });
+            imgCursor += partDur;
+          }
+          continue;
+        }
         const imgDur =
           ids.reduce((sum, id) => sum + (durBySc.get(id) ?? 0) / (coverCount.get(id) ?? 1), 0) || 0.1;
         tracks.push({
